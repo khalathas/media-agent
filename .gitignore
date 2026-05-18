@@ -1,0 +1,27 @@
+# Real config with credentials — never commit this
+media_agent_config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Output indexes — generated data, not source
+movies.json
+movies_tmdb.json
+movies_below_720p.csv
+tvshows.json
+music.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
