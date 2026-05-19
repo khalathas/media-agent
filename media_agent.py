@@ -58,48 +58,217 @@ from pathlib import Path
 if hasattr(sys.stdout, 'buffer'):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-
-LIBRARY_ROOT = "Y:/Plex Media Library"
-FFPROBE      = "Y:/ffmpeg-2026-03-12-git-9dc44b43b2-full_build/bin/ffprobe.exe"
-
-SECTIONS = {
-    "movies":        f"{LIBRARY_ROOT}/Movies",
-    "tv_shows":      f"{LIBRARY_ROOT}/TV Shows",
-    "music":         f"{LIBRARY_ROOT}/Music",
-    "concerts":      f"{LIBRARY_ROOT}/Concerts",
-    "music_videos":  f"{LIBRARY_ROOT}/Music Videos",
-    "video_lessons": f"{LIBRARY_ROOT}/Video Lessons",
-}
-
-INDEXES = {
-    "movies":         f"{LIBRARY_ROOT}/movies.json",
-    "movies_low_res": f"{LIBRARY_ROOT}/movies_below_720p.csv",
-    "movies_tmdb":    f"{LIBRARY_ROOT}/movies_tmdb.json",
-    "tvshows":        f"{LIBRARY_ROOT}/tvshows.json",
-    "music":          f"{LIBRARY_ROOT}/music.json",
-}
+# ── Constants (non-path) ──────────────────────────────────────────────────────
 
 TMDB_API_BASE  = "https://api.themoviedb.org/3"
 TMDB_TOKEN_ENV = "TMDB_TOKEN"
 
-MUSIC_EXTS = {'.mp3', '.flac', '.m4a', '.mp2', '.ogg', '.wma', '.aac', '.wav'}
+_DEFAULT_VIDEO_EXTS = frozenset({
+    '.mkv', '.mp4', '.avi', '.mov', '.m4v', '.wmv', '.flv',
+    '.ts', '.m2ts', '.mpg', '.mpeg', '.vob', '.divx', '.webm', '.ogm',
+})
 
-MUSIC_JUNK_NAMES = {'desktop.ini', 'thumbs.db', 'folder.jpg', 'folder.jpeg',
-                    'albumart.jpg', 'albumart.jpeg'}
+_DEFAULT_MUSIC_EXTS = frozenset({
+    '.mp3', '.flac', '.m4a', '.mp2', '.ogg', '.wma', '.aac', '.wav',
+})
 
-MUSIC_JUNK_PATTERNS = [
+_DEFAULT_MUSIC_JUNK_NAMES = frozenset({
+    'desktop.ini', 'thumbs.db', 'folder.jpg', 'folder.jpeg',
+    'albumart.jpg', 'albumart.jpeg',
+})
+
+_DEFAULT_MUSIC_JUNK_PATTERNS = (
     re.compile(r'^albumart.*\.(jpg|jpeg|png|bmp)$', re.IGNORECASE),
     re.compile(r'\.nfo$', re.IGNORECASE),
     re.compile(r'\.m3u8?$', re.IGNORECASE),
     re.compile(r'\.lnk$', re.IGNORECASE),
+)
+
+# Config search paths (in priority order, after --config flag and env var)
+_CONFIG_SEARCH_PATHS = [
+    Path('media_agent_config.json'),
+    Path.home() / '.config' / 'media-agent' / 'config.json',
+    Path.home() / 'media_agent_config.json',
 ]
 
-MUSIC_NEEDS_TAGGING_DIR = "_NeedsTagging"
-MUSIC_COLLISIONS_DIR    = "_NeedsTagging/_Collisions"
+# ── Configuration ─────────────────────────────────────────────────────────────
 
-VIDEO_EXTS = {'.mkv', '.mp4', '.avi', '.mov', '.m4v', '.wmv', '.flv',
-              '.ts', '.m2ts', '.mpg', '.mpeg', '.vob', '.divx', '.webm', '.ogm'}
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
+
+@dataclass(frozen=True)
+class Config:
+    library_root:           Path
+    sections:               dict   # {'movies': Path, 'tv_shows': Path, 'music': Path}
+    indexes:                dict   # {'movies': Path, 'movies_low_res': Path, ...}
+    reports_dir:            Path
+    ffprobe:                Optional[str]
+    tmdb_token:             str
+    video_exts:             frozenset
+    music_exts:             frozenset
+    music_junk_names:       frozenset
+    music_junk_patterns:    tuple
+    music_needs_tagging_dir: str
+    music_collisions_dir:   str
+
+    @classmethod
+    def load(cls, config_path: Optional[Path] = None) -> 'Config':
+        path = cls._find_config_file(config_path)
+        if path is None:
+            searched = '\n  '.join(str(p.resolve()) for p in _CONFIG_SEARCH_PATHS)
+            print(
+                "ERROR: No media_agent_config.json found.\n"
+                f"Searched:\n  {searched}\n\n"
+                "Copy media_agent_config.EXAMPLE.json to one of the above paths "
+                "and set 'library_root'.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        try:
+            with open(path, encoding='utf-8') as f:
+                raw = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Could not parse {path}: {e}", file=sys.stderr)
+            sys.exit(2)
+
+        # ── Required field ────────────────────────────────────────────────────
+        lr = raw.get('library_root')
+        if not lr:
+            print(
+                f"ERROR: {path} is missing required field 'library_root'.\n"
+                "If this is an old TMDB-only config, copy media_agent_config.EXAMPLE.json\n"
+                "and merge your 'tmdb_read_access_token' into the new format.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        library_root = Path(lr).expanduser().resolve()
+        if not library_root.is_dir():
+            print(
+                f"ERROR: library_root '{library_root}' does not exist or is not a directory.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        # ── Sections ──────────────────────────────────────────────────────────
+        sec_overrides = raw.get('sections') or {}
+        sections = {
+            'movies':   cls._resolve_section(sec_overrides.get('movies'),   library_root / 'Movies'),
+            'tv_shows': cls._resolve_section(sec_overrides.get('tv_shows'), library_root / 'TV Shows'),
+            'music':    cls._resolve_section(sec_overrides.get('music'),    library_root / 'Music'),
+        }
+        for name, spath in sections.items():
+            if not spath.is_dir():
+                print(f"WARNING: section '{name}' path does not exist: {spath}")
+
+        # ── Indexes and reports dirs ──────────────────────────────────────────
+        indexes_dir  = cls._resolve_dir(raw.get('indexes_dir'),  library_root)
+        reports_dir  = cls._resolve_dir(raw.get('reports_dir'),  library_root)
+
+        indexes = {
+            'movies':         indexes_dir / 'movies.json',
+            'movies_low_res': indexes_dir / 'movies_below_720p.csv',
+            'movies_tmdb':    indexes_dir / 'movies_tmdb.json',
+            'tvshows':        indexes_dir / 'tvshows.json',
+            'music':          indexes_dir / 'music.json',
+        }
+
+        # ── ffprobe ───────────────────────────────────────────────────────────
+        ffprobe = cls._resolve_ffprobe(raw.get('ffprobe_path'))
+        if ffprobe is None:
+            print("WARNING: ffprobe not found in PATH and not set in config. "
+                  "Commands that probe media files will fail.")
+
+        # ── TMDB token ────────────────────────────────────────────────────────
+        tmdb_token = raw.get('tmdb_read_access_token', '')
+        if tmdb_token in ('', 'YOUR_TOKEN_HERE'):
+            tmdb_token = ''
+
+        # ── Music settings ────────────────────────────────────────────────────
+        music_cfg = raw.get('music') or {}
+
+        # ── Extension overrides ───────────────────────────────────────────────
+        video_exts = frozenset(raw['video_exts']) if 'video_exts' in raw else _DEFAULT_VIDEO_EXTS
+        music_exts = frozenset(raw['music_exts']) if 'music_exts' in raw else _DEFAULT_MUSIC_EXTS
+        junk_names = (
+            frozenset(n.lower() for n in raw['music']['junk_names'])
+            if 'music' in raw and 'junk_names' in raw['music']
+            else _DEFAULT_MUSIC_JUNK_NAMES
+        )
+        junk_patterns = (
+            tuple(re.compile(p, re.IGNORECASE) for p in raw['music']['junk_patterns'])
+            if 'music' in raw and 'junk_patterns' in raw['music']
+            else _DEFAULT_MUSIC_JUNK_PATTERNS
+        )
+
+        return cls(
+            library_root           = library_root,
+            sections               = sections,
+            indexes                = indexes,
+            reports_dir            = reports_dir,
+            ffprobe                = ffprobe,
+            tmdb_token             = tmdb_token,
+            video_exts             = video_exts,
+            music_exts             = music_exts,
+            music_junk_names       = junk_names,
+            music_junk_patterns    = junk_patterns,
+            music_needs_tagging_dir = music_cfg.get('needs_tagging_dir', '_NeedsTagging'),
+            music_collisions_dir    = music_cfg.get('collisions_dir', '_NeedsTagging/_Collisions'),
+        )
+
+    @staticmethod
+    def _find_config_file(explicit: Optional[Path]) -> Optional[Path]:
+        if explicit is not None:
+            p = Path(explicit).expanduser().resolve()
+            if p.is_file():
+                return p
+            print(f"ERROR: Config file not found: {p}", file=sys.stderr)
+            sys.exit(2)
+        env = os.environ.get('MEDIA_AGENT_CONFIG', '').strip()
+        if env:
+            p = Path(env).expanduser().resolve()
+            if p.is_file():
+                return p
+        for candidate in _CONFIG_SEARCH_PATHS:
+            if candidate.expanduser().resolve().is_file():
+                return candidate.expanduser().resolve()
+        return None
+
+    @staticmethod
+    def _resolve_section(override, default: Path) -> Path:
+        if override:
+            return Path(override).expanduser().resolve()
+        return default
+
+    @staticmethod
+    def _resolve_dir(raw_val, default: Path) -> Path:
+        if raw_val:
+            p = Path(raw_val).expanduser().resolve()
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        return default
+
+    @staticmethod
+    def _resolve_ffprobe(config_val: Optional[str]) -> Optional[str]:
+        p = shutil.which('ffprobe')
+        if p:
+            return p
+        if os.name == 'nt':
+            p = shutil.which('ffprobe.exe')
+            if p:
+                return p
+        if config_val:
+            cv = Path(config_val).expanduser()
+            if cv.is_file():
+                return str(cv)
+            print(f"WARNING: ffprobe_path '{config_val}' not found.")
+        return None
+
+
+# Module-level singleton — populated in main() after argparse
+CONFIG: Optional[Config] = None
 
 LOW_RES_COLS = ['name', 'width', 'height', 'resolution_class',
                 'extension', 'audio_codec', 'video_codec',
@@ -125,9 +294,11 @@ def classify_resolution(width, height):
 
 def get_media_info(file_path):
     """Run ffprobe and return a dict of media properties, or {'error': ...}."""
+    if not CONFIG.ffprobe:
+        return {'error': 'ffprobe not found — set ffprobe_path in config or add ffprobe to PATH'}
     try:
         result = subprocess.run(
-            [FFPROBE, '-v', 'quiet', '-print_format', 'json',
+            [CONFIG.ffprobe, '-v', 'quiet', '-print_format', 'json',
              '-show_streams', '-show_format', file_path],
             capture_output=True, text=True,
             encoding='utf-8', errors='replace', timeout=30,
@@ -168,7 +339,7 @@ def scan_video_files(section_path):
         dirs[:] = sorted(d for d in dirs
                          if not d.startswith('@') and not d.startswith('.'))
         for fname in fnames:
-            if os.path.splitext(fname)[1].lower() in VIDEO_EXTS:
+            if os.path.splitext(fname)[1].lower() in CONFIG.video_exts:
                 fpath = os.path.join(root, fname).replace('\\', '/')
                 if fname in files:
                     # Duplicate filename in different subdirs — keep both with paths
@@ -183,13 +354,13 @@ def scan_video_files(section_path):
 
 
 def load_movies_json():
-    path = INDEXES['movies']
+    path = CONFIG.indexes['movies']
     with open(path, encoding='utf-8') as f:
         return json.load(f)
 
 
 def save_movies_json(data):
-    path = INDEXES['movies']
+    path = CONFIG.indexes['movies']
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -215,7 +386,7 @@ def confirm(prompt, default='no'):
 def cmd_rescan(args):
     """Scan the Movies folder and reconcile movies.json + movies_below_720p.csv."""
     print("Scanning Movies folder...")
-    disk_files = scan_video_files(SECTIONS['movies'])
+    disk_files = scan_video_files(CONFIG.sections['movies'])
     print(f"  {len(disk_files)} video files found on disk")
 
     data = load_movies_json()
@@ -290,7 +461,7 @@ def cmd_rescan(args):
 def _check_low_res_sync(movies):
     """Warn if movies_below_720p.csv is out of sync with movies.json."""
     try:
-        with open(INDEXES['movies_low_res'], newline='', encoding='utf-8') as f:
+        with open(CONFIG.indexes['movies_low_res'], newline='', encoding='utf-8') as f:
             csv_names = {r['name'] for r in csv.DictReader(f)}
         expected = {m['name'] for m in movies
                     if (m.get('height') or 0) < 720 and (m.get('width') or 0) < 1280}
@@ -325,7 +496,7 @@ def _rebuild_low_res(movies, verbose=False):
                 'date_added':       m.get('date_added', ''),
             })
     below.sort(key=lambda r: (r['height'], r['width']))
-    path = INDEXES['movies_low_res']
+    path = CONFIG.indexes['movies_low_res']
     with open(path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=LOW_RES_COLS)
         writer.writeheader()
@@ -479,7 +650,7 @@ def build_clean_name(parsed):
 
 def cmd_normalize(args):
     """Scan Movies folder and suggest standardized filenames."""
-    disk_files = scan_video_files(SECTIONS['movies'])
+    disk_files = scan_video_files(CONFIG.sections['movies'])
     proposals  = []
 
     for fname, fpath in sorted(disk_files.items()):
@@ -514,7 +685,7 @@ def cmd_normalize(args):
             dupe_count += len(indices)
 
     # ── Write review file ─────────────────────────────────────────────────────
-    review_path = f"{LIBRARY_ROOT}/normalize_preview.txt"
+    review_path = str(CONFIG.reports_dir / 'normalize_preview.txt')
     with open(review_path, 'w', encoding='utf-8') as rf:
         rf.write(f"Normalize preview -- {len(proposals)} proposals"
                  f" ({dupe_count} flagged as duplicates)\n")
@@ -603,7 +774,7 @@ def cmd_status(args):
 
     # Disk check (quick — just count, don't walk)
     print("\nDisk check...")
-    disk_files = scan_video_files(SECTIONS['movies'])
+    disk_files = scan_video_files(CONFIG.sections['movies'])
     in_index   = {m['name'] for m in movies}
     on_disk    = set(disk_files)
     new_count   = len(on_disk - in_index)
@@ -614,7 +785,7 @@ def cmd_status(args):
 
     # Low-res CSV check
     try:
-        with open(INDEXES['movies_low_res'], newline='', encoding='utf-8') as f:
+        with open(CONFIG.indexes['movies_low_res'], newline='', encoding='utf-8') as f:
             csv_count = sum(1 for _ in csv.DictReader(f))
         expected = sum(1 for m in movies
                        if (m.get('height') or 0) < 720 and (m.get('width') or 0) < 1280)
@@ -786,9 +957,11 @@ def parse_episode_info(filename):
 
 def get_episode_info(file_path):
     """Run ffprobe on an episode file and return media properties."""
+    if not CONFIG.ffprobe:
+        return {'error': 'ffprobe not found — set ffprobe_path in config or add ffprobe to PATH'}
     try:
         result = subprocess.run(
-            [FFPROBE, '-v', 'quiet', '-print_format', 'json',
+            [CONFIG.ffprobe, '-v', 'quiet', '-print_format', 'json',
              '-show_streams', '-show_format', file_path],
             capture_output=True, text=True,
             encoding='utf-8', errors='replace', timeout=60,
@@ -919,7 +1092,7 @@ def _collect_episodes_from_dir(dir_path, season_hint=None, existing_episodes=Non
     results = []
     try:
         for fname in sorted(os.listdir(dir_path)):
-            if os.path.splitext(fname)[1].lower() not in VIDEO_EXTS:
+            if os.path.splitext(fname)[1].lower() not in CONFIG.video_exts:
                 continue
             fpath = os.path.join(dir_path, fname).replace('\\', '/')
             existing = existing_episodes.get(fname) if existing_episodes else None
@@ -938,7 +1111,7 @@ def scan_tv_shows(existing_episodes=None):
     existing_episodes: {filename: episode_dict} from a prior index. When provided,
                        probe data is reused for known files (incremental rescan).
     """
-    tv_root = SECTIONS['tv_shows']
+    tv_root = CONFIG.sections['tv_shows']
     shows   = []
 
     try:
@@ -984,7 +1157,7 @@ def scan_tv_shows(existing_episodes=None):
         ]
         flat_videos = [
             f for f in children
-            if os.path.splitext(f)[1].lower() in VIDEO_EXTS
+            if os.path.splitext(f)[1].lower() in CONFIG.video_exts
         ]
 
         # episodes_by_season: season_int -> [ep_dict, ...]
@@ -1304,7 +1477,7 @@ def _build_normalize_tv_plan(tv_root, data):
 
             for fname in sorted(filenames):
                 ext = os.path.splitext(fname)[1].lower()
-                if ext not in VIDEO_EXTS:
+                if ext not in CONFIG.video_exts:
                     continue
 
                 # Compute relative path from show root
@@ -1420,8 +1593,8 @@ def _print_normalize_tv_plan(plan):
 
 def cmd_normalize_tv(args):
     """Normalize the TV Shows folder structure to Plex standards."""
-    tv_root = SECTIONS['tv_shows']
-    index_path = INDEXES['tvshows']
+    tv_root = CONFIG.sections['tv_shows']
+    index_path = CONFIG.indexes['tvshows']
 
     if not os.path.exists(index_path):
         print("ERROR: tvshows.json not found — run scan-tvshows first.")
@@ -1531,7 +1704,7 @@ def cmd_reassign_season(args):
     Reassign all Season 0 episodes of one or more shows to a target season.
     Modifies tvshows.json directly — no disk rescan needed.
     """
-    index_path = INDEXES['tvshows']
+    index_path = CONFIG.indexes['tvshows']
     if not os.path.exists(index_path):
         print("ERROR: tvshows.json not found — run scan-tvshows first.")
         return
@@ -1627,9 +1800,9 @@ def cmd_scan_tvshows(args):
     # Load existing index for incremental rescan
     existing_episodes = None
     old_filenames     = set()
-    if rescan_mode and os.path.exists(INDEXES['tvshows']):
+    if rescan_mode and os.path.exists(CONFIG.indexes['tvshows']):
         print("Loading existing tvshows.json for incremental rescan...")
-        with open(INDEXES['tvshows'], encoding='utf-8') as f:
+        with open(CONFIG.indexes['tvshows'], encoding='utf-8') as f:
             old_data = json.load(f)
         existing_episodes = {}
         for show in old_data.get('shows', []):
@@ -1645,7 +1818,7 @@ def cmd_scan_tvshows(args):
             print("Full scan (all files will be probed).\n")
 
     print("Scanning TV Shows folder...")
-    print(f"  {SECTIONS['tv_shows']}\n")
+    print(f"  {CONFIG.sections['tv_shows']}\n")
 
     shows = scan_tv_shows(existing_episodes=existing_episodes)
     shows = _merge_duplicate_shows(shows)
@@ -1684,7 +1857,7 @@ def cmd_scan_tvshows(args):
         'shows':     shows,
     }
 
-    index_path = INDEXES['tvshows']
+    index_path = CONFIG.indexes['tvshows']
     with open(index_path, 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
 
@@ -1716,7 +1889,7 @@ def cmd_scan_tvshows(args):
             print(f"  {name}: {count} episode(s)")
 
     # ── Write probe_failures.txt ───────────────────────────────────────────────
-    failures_path = f"{LIBRARY_ROOT}/probe_failures.txt"
+    failures_path = str(CONFIG.reports_dir / 'probe_failures.txt')
     if probe_errors:
         with open(failures_path, 'w', encoding='utf-8') as f:
             f.write(f"ffprobe failures — {len(probe_errors)} file(s)\n")
@@ -1853,9 +2026,9 @@ def _make_plex_music_path(tags):
 
 def _is_junk_file(fname):
     """Return True if this file should be deleted as library junk."""
-    if fname.lower() in MUSIC_JUNK_NAMES:
+    if fname.lower() in CONFIG.music_junk_names:
         return True
-    for pat in MUSIC_JUNK_PATTERNS:
+    for pat in CONFIG.music_junk_patterns:
         if pat.search(fname):
             return True
     return False
@@ -1871,7 +2044,7 @@ def cmd_scan_music(args):
         print("ERROR: mutagen not installed. Run: pip install mutagen")
         sys.exit(1)
 
-    music_root = SECTIONS['music']
+    music_root = CONFIG.sections['music']
     print(f"Scanning Music folder...")
     print(f"  {music_root}\n")
 
@@ -1899,7 +2072,7 @@ def cmd_scan_music(args):
             for fname in sorted(fnames):
                 fpath = os.path.join(root, fname)
                 ext = os.path.splitext(fname)[1].lower()
-                if ext in MUSIC_EXTS:
+                if ext in CONFIG.music_exts:
                     total_files += 1
                     tags = _read_music_tags(fpath)
                     tags['filename'] = fname
@@ -1923,7 +2096,7 @@ def cmd_scan_music(args):
         'artists':   artists,
     }
 
-    index_path = INDEXES['music']
+    index_path = CONFIG.indexes['music']
     with open(index_path, 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
 
@@ -1992,8 +2165,8 @@ def cmd_organize_music(args):
         print("Specify --dry-run to preview or --apply to execute.")
         sys.exit(1)
 
-    music_root = SECTIONS['music']
-    needs_dir  = os.path.join(music_root, MUSIC_NEEDS_TAGGING_DIR)
+    music_root = CONFIG.sections['music']
+    needs_dir  = os.path.join(music_root, CONFIG.music_needs_tagging_dir)
 
     print(f"{'[DRY RUN] ' if dry_run else ''}Organizing Music folder...")
     print(f"  {music_root}\n")
@@ -2029,7 +2202,7 @@ def cmd_organize_music(args):
                     junk_dels.append(fpath)
                     continue
 
-                if ext not in MUSIC_EXTS:
+                if ext not in CONFIG.music_exts:
                     continue
 
                 tags = _read_music_tags(fpath)
@@ -2066,7 +2239,7 @@ def cmd_organize_music(args):
     # Detect destination collisions among well-tagged flat moves.
     # Both copies go to _NeedsTagging/_Collisions/Artist/Album/ using their
     # ORIGINAL filenames so the user can compare and decide.
-    collisions_root = os.path.join(music_root, MUSIC_COLLISIONS_DIR)
+    collisions_root = os.path.join(music_root, CONFIG.music_collisions_dir)
     dst_seen    = {}   # norm_dst → (src, index_in_deduped)
     deduped_moves   = []
     collision_moves = []
@@ -2086,7 +2259,7 @@ def cmd_organize_music(args):
         return col_path
 
     for src, dst in moves:
-        if MUSIC_NEEDS_TAGGING_DIR in dst:
+        if CONFIG.music_needs_tagging_dir in dst:
             deduped_moves.append((src, dst))
             continue
         norm_dst = dst.lower()
@@ -2104,9 +2277,9 @@ def cmd_organize_music(args):
     moves = deduped_moves + collision_moves
 
     # Report plan
-    well_moves      = [(s, d) for s, d in moves if MUSIC_NEEDS_TAGGING_DIR not in d]
-    tagging_moves   = [(s, d) for s, d in moves if MUSIC_NEEDS_TAGGING_DIR in d
-                       and MUSIC_COLLISIONS_DIR not in d]
+    well_moves      = [(s, d) for s, d in moves if CONFIG.music_needs_tagging_dir not in d]
+    tagging_moves   = [(s, d) for s, d in moves if CONFIG.music_needs_tagging_dir in d
+                       and CONFIG.music_collisions_dir not in d]
     collision_pairs = len(collision_moves) // 2  # each collision = 2 files
 
     print(f"Plan:")
@@ -2195,7 +2368,7 @@ def cmd_organize_music(args):
         if not rel:
             continue  # don't remove music_root itself
         # Skip _NeedsTagging tree
-        if rel.startswith(MUSIC_NEEDS_TAGGING_DIR):
+        if rel.startswith(CONFIG.music_needs_tagging_dir):
             continue
         try:
             contents = [f for f in os.listdir(root) if not f.startswith('.')]
@@ -2216,27 +2389,13 @@ def cmd_organize_music(args):
 _TMDB_ID_RE = re.compile(r'\{tmdb-(\d+)\}', re.IGNORECASE)
 
 
-TMDB_CONFIG_FILE = "Y:/media_agent_config.json"
-
-
 def _get_tmdb_headers():
-    # 1. Environment variable takes priority
-    token = os.environ.get(TMDB_TOKEN_ENV, '').strip()
-
-    # 2. Fall back to config file
-    if not token and os.path.exists(TMDB_CONFIG_FILE):
-        try:
-            with open(TMDB_CONFIG_FILE, encoding='utf-8') as f:
-                cfg = json.load(f)
-            token = cfg.get('tmdb_read_access_token', '').strip()
-            if token == 'YOUR_TOKEN_HERE':
-                token = ''
-        except Exception as e:
-            print(f"WARNING: Could not read {TMDB_CONFIG_FILE}: {e}")
+    # Environment variable takes priority over config file
+    token = os.environ.get(TMDB_TOKEN_ENV, '').strip() or CONFIG.tmdb_token
 
     if not token:
         print("ERROR: No TMDB Read Access Token found.")
-        print(f"  Option 1 — edit {TMDB_CONFIG_FILE} and set 'tmdb_read_access_token'")
+        print(f"  Option 1 — set 'tmdb_read_access_token' in your media_agent_config.json")
         print(f"  Option 2 — set env var {TMDB_TOKEN_ENV}=your_token")
         sys.exit(1)
 
@@ -2353,7 +2512,7 @@ def cmd_tmdb_enrich(args):
     movies  = data['movies']
 
     # Load existing tmdb index for incremental mode
-    tmdb_path = INDEXES['movies_tmdb']
+    tmdb_path = CONFIG.indexes['movies_tmdb']
     existing  = {}
     if os.path.exists(tmdb_path) and not args.reset:
         with open(tmdb_path, encoding='utf-8') as f:
@@ -2515,7 +2674,7 @@ def cmd_tmdb_canonicalize(args):
     Only processes 'confident' matches. Skips files already in canonical form.
     Writes a preview report before applying any changes.
     """
-    tmdb_path = INDEXES['movies_tmdb']
+    tmdb_path = CONFIG.indexes['movies_tmdb']
     if not os.path.exists(tmdb_path):
         print("ERROR: movies_tmdb.json not found. Run tmdb-enrich first.")
         sys.exit(1)
@@ -2571,7 +2730,7 @@ def cmd_tmdb_canonicalize(args):
         return
 
     # ── Write report file ─────────────────────────────────────────────────────
-    report_path = f"{LIBRARY_ROOT}/tmdb_canonicalize_preview.txt"
+    report_path = str(CONFIG.reports_dir / 'tmdb_canonicalize_preview.txt')
     with open(report_path, 'w', encoding='utf-8') as rf:
         rf.write(f"TMDB Canonicalize Preview — {len(proposals)} files\n")
         rf.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -2596,7 +2755,7 @@ def cmd_tmdb_canonicalize(args):
         print("Aborted.")
         return
 
-    disk_files    = scan_video_files(SECTIONS['movies'])
+    disk_files    = scan_video_files(CONFIG.sections['movies'])
     data          = load_movies_json()
     index_by_name = {m['name']: m for m in data['movies']}
     tmdb_by_name  = {e['filename']: e for e in tmdb_data.get('movies', [])}
@@ -2645,7 +2804,7 @@ def cmd_tmdb_rename(args):
     Add {tmdb-XXXXX} suffix to movie filenames based on movies_tmdb.json.
     Only processes 'confident' matches by default; --include-ambiguous adds those too.
     """
-    tmdb_path = INDEXES['movies_tmdb']
+    tmdb_path = CONFIG.indexes['movies_tmdb']
     if not os.path.exists(tmdb_path):
         print("ERROR: movies_tmdb.json not found. Run tmdb-enrich first.")
         sys.exit(1)
@@ -2686,7 +2845,7 @@ def cmd_tmdb_rename(args):
 
     # ── Write report file ─────────────────────────────────────────────────────
     label       = "confident+ambiguous" if args.include_ambiguous else "confident"
-    report_path = f"{LIBRARY_ROOT}/tmdb_rename_preview.txt"
+    report_path = str(CONFIG.reports_dir / 'tmdb_rename_preview.txt')
     with open(report_path, 'w', encoding='utf-8') as rf:
         rf.write(f"TMDB Rename Preview — {len(proposals)} files ({label} matches)\n")
         rf.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -2707,7 +2866,7 @@ def cmd_tmdb_rename(args):
         print("Aborted.")
         return
 
-    disk_files    = scan_video_files(SECTIONS['movies'])
+    disk_files    = scan_video_files(CONFIG.sections['movies'])
     data          = load_movies_json()
     index_by_name = {m['name']: m for m in data['movies']}
     tmdb_by_name  = {e['filename']: e for e in tmdb_data.get('movies', [])}
@@ -2866,7 +3025,7 @@ def cmd_tmdb_fix(args):
     2. Re-search all no_match (and parse-failed skipped) entries with
        smarter filename cleaning.
     """
-    tmdb_path = INDEXES['movies_tmdb']
+    tmdb_path = CONFIG.indexes['movies_tmdb']
     if not os.path.exists(tmdb_path):
         print("ERROR: movies_tmdb.json not found. Run tmdb-enrich first.")
         sys.exit(1)
@@ -2991,10 +3150,16 @@ def cmd_tmdb_fix(args):
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def main():
+    global CONFIG
+
     parser = argparse.ArgumentParser(
         description="Media Library Maintenance Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        '--config', metavar='PATH', default=None,
+        help='Path to media_agent_config.json (overrides env var and default search paths)',
     )
     sub = parser.add_subparsers(dest='command', required=True)
 
@@ -3096,6 +3261,8 @@ def main():
         help='Skip confirmation prompt')
 
     args = parser.parse_args()
+
+    CONFIG = Config.load(Path(args.config) if args.config else None)
 
     dispatch = {
         'rescan':            cmd_rescan,

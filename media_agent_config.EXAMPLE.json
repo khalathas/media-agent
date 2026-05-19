@@ -1,3 +1,21 @@
 {
-  "tmdb_read_access_token": "READ_ACCESS_TOKEN_HERE"
+  "library_root": "/path/to/Plex Media Library",
+
+  "sections": {
+    "movies":   null,
+    "tv_shows": null,
+    "music":    null
+  },
+
+  "indexes_dir": null,
+  "reports_dir": null,
+
+  "ffprobe_path": null,
+
+  "tmdb_read_access_token": "YOUR_TOKEN_HERE",
+
+  "music": {
+    "needs_tagging_dir": "_NeedsTagging",
+    "collisions_dir":    "_NeedsTagging/_Collisions"
+  }
 }
