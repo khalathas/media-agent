@@ -51,8 +51,10 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Force UTF-8 output so filenames with special characters don't crash on Windows
 if hasattr(sys.stdout, 'buffer'):
@@ -93,8 +95,6 @@ _CONFIG_SEARCH_PATHS = [
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -2175,7 +2175,7 @@ def cmd_organize_music(args):
     junk_dels  = []   # paths to delete
     conflicts  = []   # (src, dst) where dst already exists
 
-    music_root_norm = music_root.replace('\\', '/')
+    music_root_norm = str(music_root).replace('\\', '/')
 
     for artist_dir in sorted(os.listdir(music_root)):
         if artist_dir.startswith('_') or artist_dir.startswith('.'):
