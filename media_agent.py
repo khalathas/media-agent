@@ -252,6 +252,7 @@ class Config:
 
     @staticmethod
     def _resolve_ffprobe(config_val: Optional[str]) -> Optional[str]:
+        # 1. System PATH — honours any existing install, avoids duplicates
         p = shutil.which('ffprobe')
         if p:
             return p
@@ -259,11 +260,18 @@ class Config:
             p = shutil.which('ffprobe.exe')
             if p:
                 return p
+        # 2. Explicit config override
         if config_val:
             cv = Path(config_val).expanduser()
             if cv.is_file():
                 return str(cv)
             print(f"WARNING: ffprobe_path '{config_val}' not found.")
+        # 3. vendor/ffmpeg/ installed by scripts/install_ffmpeg.*
+        vendor_bin = Path(__file__).parent / 'vendor' / 'ffmpeg' / 'bin'
+        for name in ('ffprobe', 'ffprobe.exe'):
+            candidate = vendor_bin / name
+            if candidate.is_file():
+                return str(candidate)
         return None
 
 
@@ -747,8 +755,30 @@ def cmd_normalize(args):
 
 # ── Command: status ────────────────────────────────────────────────────────────
 
+def _print_config_block():
+    """Print the resolved runtime configuration."""
+    print("── Configuration ─────────────────────────────────────────────────────────────")
+    print(f"  library_root  : {CONFIG.library_root}")
+    for key in ('movies', 'tv_shows', 'music'):
+        path = CONFIG.sections.get(key)
+        if path:
+            marker = "" if path.is_dir() else "  [NOT FOUND]"
+            print(f"  section/{key:<8}: {path}{marker}")
+        else:
+            print(f"  section/{key:<8}: (not configured)")
+    print(f"  indexes_dir   : {CONFIG.indexes_dir}")
+    print(f"  reports_dir   : {CONFIG.reports_dir}")
+    ffprobe_display = CONFIG.ffprobe if CONFIG.ffprobe else "NOT FOUND — run scripts/install_ffmpeg"
+    print(f"  ffprobe       : {ffprobe_display}")
+    token_display = "set" if CONFIG.tmdb_token else "not set"
+    print(f"  TMDB token    : {token_display}")
+    print()
+
+
 def cmd_status(args):
     """Show library stats and index health."""
+    _print_config_block()
+
     # Index stats
     data = load_movies_json()
     movies = data['movies']
@@ -3147,6 +3177,172 @@ def cmd_tmdb_fix(args):
         print(f"and edit movies_tmdb.json: set match_status='confident', tmdb_id=NNNNN")
 
 
+_TMDB_TOKEN_HINT = """\
+  TMDB token: not set
+    The tmdb-* commands require a free TMDB API Read Access Token.
+    1. Create an account at https://www.themoviedb.org/signup
+    2. Request an API key at https://www.themoviedb.org/settings/api
+       (choose "Developer" tier — free, instant approval for personal use)
+    3. Copy the "API Read Access Token" (the long v4 token, NOT the v3 key)
+    4. Add it to media_agent_config.json as "tmdb_read_access_token"
+       or set the environment variable: TMDB_TOKEN=<token>"""
+
+
+def cmd_doctor(args):
+    """Health check: ffprobe, mutagen, library paths, TMDB token."""
+    import importlib
+    ok = True
+
+    print("── media-agent doctor ────────────────────────────────────────────────────────")
+
+    # ffprobe
+    if CONFIG.ffprobe:
+        try:
+            result = subprocess.run(
+                [CONFIG.ffprobe, '-version'],
+                capture_output=True, text=True, timeout=10,
+            )
+            version_line = result.stdout.splitlines()[0] if result.stdout else '(no output)'
+            print(f"  [OK] ffprobe     : {version_line}")
+        except Exception as e:
+            print(f"  [!!] ffprobe     : found at {CONFIG.ffprobe} but failed to run: {e}")
+            ok = False
+    else:
+        print("  [!!] ffprobe     : NOT FOUND")
+        print("       Run scripts/install_ffmpeg.ps1 (Windows) or scripts/install_ffmpeg.sh")
+        ok = False
+
+    # mutagen
+    try:
+        importlib.import_module('mutagen')
+        print("  [OK] mutagen     : importable")
+    except ImportError:
+        print("  [!!] mutagen     : not installed — run: pip install mutagen")
+        ok = False
+
+    # requests
+    try:
+        importlib.import_module('requests')
+        print("  [OK] requests    : importable")
+    except ImportError:
+        print("  [!!] requests    : not installed — run: pip install requests")
+        ok = False
+
+    # library root
+    if CONFIG.library_root.is_dir():
+        print(f"  [OK] library_root: {CONFIG.library_root}")
+    else:
+        print(f"  [!!] library_root: NOT FOUND: {CONFIG.library_root}")
+        ok = False
+
+    # sections
+    any_section_ok = False
+    for key in ('movies', 'tv_shows', 'music'):
+        path = CONFIG.sections.get(key)
+        if path is None:
+            print(f"  [--] section/{key:<8}: not configured")
+        elif path.is_dir():
+            print(f"  [OK] section/{key:<8}: {path}")
+            any_section_ok = True
+        else:
+            print(f"  [!!] section/{key:<8}: NOT FOUND: {path}")
+    if not any_section_ok:
+        print("       WARNING: no section directories found — check library_root and config")
+        ok = False
+
+    # TMDB token
+    token = CONFIG.tmdb_token or os.environ.get('TMDB_TOKEN', '').strip()
+    if not token:
+        print(_TMDB_TOKEN_HINT)
+    else:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                'https://api.themoviedb.org/3/configuration',
+                headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    print("  [OK] TMDB token  : valid")
+                else:
+                    print(f"  [!!] TMDB token  : unexpected status {resp.status}")
+                    ok = False
+        except Exception as e:
+            msg = str(e)
+            if '401' in msg:
+                print(f"  [!!] TMDB token  : invalid (401 Unauthorized) — check your token")
+                ok = False
+            else:
+                print(f"  [??] TMDB token  : could not verify ({e})")
+
+    print()
+    if ok:
+        print("All checks passed.")
+    else:
+        print("One or more checks failed — see above.")
+        raise SystemExit(1)
+
+
+def cmd_init(args):
+    """Interactive first-run configuration bootstrap."""
+    config_path = Path.home() / '.config' / 'media-agent' / 'config.json'
+
+    print("── media-agent init ──────────────────────────────────────────────────────────")
+    print("This will create a config file at:")
+    print(f"  {config_path}")
+    print()
+
+    if config_path.exists():
+        answer = input("Config file already exists. Overwrite? [y/N] ").strip().lower()
+        if answer != 'y':
+            print("Aborted. Existing config unchanged.")
+            return
+
+    # Prompt for library_root
+    while True:
+        raw = input("Path to your Plex Media Library folder: ").strip()
+        if not raw:
+            print("  library_root is required.")
+            continue
+        library_root = Path(raw).expanduser()
+        if library_root.is_dir():
+            break
+        print(f"  Directory not found: {library_root}")
+        print("  Please enter a valid path.")
+
+    # Prompt for TMDB token
+    print()
+    print("TMDB Read Access Token (optional — required for tmdb-* commands).")
+    print("Leave blank to skip; add it later via the config file or TMDB_TOKEN env var.")
+    print("Get one free at: https://www.themoviedb.org/settings/api")
+    tmdb_token = input("TMDB Read Access Token: ").strip()
+
+    config = {
+        "library_root": str(library_root),
+        "sections":     {"movies": None, "tv_shows": None, "music": None},
+        "indexes_dir":  None,
+        "reports_dir":  None,
+        "ffprobe_path": None,
+    }
+    if tmdb_token:
+        config["tmdb_read_access_token"] = tmdb_token
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+        f.write('\n')
+
+    print()
+    print(f"Config written to: {config_path}")
+    print()
+    print("Next steps:")
+    print("  1. Run: python media_agent.py doctor   (verify everything is working)")
+    print("  2. Run: python media_agent.py status   (see your library stats)")
+    print()
+    print("To customise section paths, indexes location, or other options,")
+    print(f"edit {config_path}")
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def main():
@@ -3185,6 +3381,12 @@ def main():
 
     # status
     sub.add_parser('status', help='Show library stats and index health')
+
+    # doctor
+    sub.add_parser('doctor', help='Health check: ffprobe, mutagen, library paths, TMDB token')
+
+    # init
+    sub.add_parser('init', help='Interactive first-run configuration bootstrap')
 
     # scan-tvshows
     p_tv = sub.add_parser('scan-tvshows',
@@ -3262,6 +3464,11 @@ def main():
 
     args = parser.parse_args()
 
+    # init creates the config — run it before Config.load so a missing config isn't fatal
+    if args.command == 'init':
+        cmd_init(args)
+        return
+
     CONFIG = Config.load(Path(args.config) if args.config else None)
 
     dispatch = {
@@ -3269,6 +3476,7 @@ def main():
         'rebuild-lowres':    cmd_rebuild_lowres,
         'normalize':         cmd_normalize,
         'status':            cmd_status,
+        'doctor':            cmd_doctor,
         'scan-tvshows':      cmd_scan_tvshows,
         'normalize-tv':      cmd_normalize_tv,
         'reassign-season':   cmd_reassign_season,
