@@ -42,6 +42,7 @@ Usage:
 
 import argparse
 import csv
+import importlib
 import io
 import json
 import os
@@ -50,6 +51,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -268,7 +271,8 @@ class Config:
             print(f"WARNING: ffprobe_path '{config_val}' not found.")
         # 3. vendor/ffmpeg/ installed by scripts/install_ffmpeg.*
         vendor_bin = Path(__file__).parent / 'vendor' / 'ffmpeg' / 'bin'
-        for name in ('ffprobe', 'ffprobe.exe'):
+        names = ('ffprobe.exe',) if os.name == 'nt' else ('ffprobe',)
+        for name in names:
             candidate = vendor_bin / name
             if candidate.is_file():
                 return str(candidate)
@@ -3190,7 +3194,6 @@ _TMDB_TOKEN_HINT = """\
 
 def cmd_doctor(args):
     """Health check: ffprobe, mutagen, library paths, TMDB token."""
-    import importlib
     ok = True
 
     print("── media-agent doctor ────────────────────────────────────────────────────────")
@@ -3235,28 +3238,24 @@ def cmd_doctor(args):
         print(f"  [!!] library_root: NOT FOUND: {CONFIG.library_root}")
         ok = False
 
-    # sections
-    any_section_ok = False
+    # sections — missing dirs are warnings, not hard failures (fresh installs may not have them yet)
     for key in ('movies', 'tv_shows', 'music'):
         path = CONFIG.sections.get(key)
         if path is None:
             print(f"  [--] section/{key:<8}: not configured")
         elif path.is_dir():
             print(f"  [OK] section/{key:<8}: {path}")
-            any_section_ok = True
         else:
             print(f"  [!!] section/{key:<8}: NOT FOUND: {path}")
-    if not any_section_ok:
-        print("       WARNING: no section directories found — check library_root and config")
-        ok = False
 
     # TMDB token
     token = CONFIG.tmdb_token or os.environ.get('TMDB_TOKEN', '').strip()
     if not token:
+        print("  [--] TMDB token  : not configured (tmdb-* commands will fail)")
+        print()
         print(_TMDB_TOKEN_HINT)
     else:
         try:
-            import urllib.request
             req = urllib.request.Request(
                 'https://api.themoviedb.org/3/configuration',
                 headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
@@ -3267,13 +3266,16 @@ def cmd_doctor(args):
                 else:
                     print(f"  [!!] TMDB token  : unexpected status {resp.status}")
                     ok = False
-        except Exception as e:
-            msg = str(e)
-            if '401' in msg:
-                print(f"  [!!] TMDB token  : invalid (401 Unauthorized) — check your token")
-                ok = False
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                print("  [!!] TMDB token  : invalid (401 Unauthorized) — check your token")
             else:
-                print(f"  [??] TMDB token  : could not verify ({e})")
+                print(f"  [??] TMDB token  : HTTP {e.code} — could not verify")
+            ok = False
+        except urllib.error.URLError as e:
+            print(f"  [??] TMDB token  : network error — could not verify ({e.reason})")
+        except Exception:
+            print("  [??] TMDB token  : could not verify (unexpected error)")
 
     print()
     if ok:
@@ -3304,7 +3306,7 @@ def cmd_init(args):
         if not raw:
             print("  library_root is required.")
             continue
-        library_root = Path(raw).expanduser()
+        library_root = Path(raw).expanduser().resolve()
         if library_root.is_dir():
             break
         print(f"  Directory not found: {library_root}")

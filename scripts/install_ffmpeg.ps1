@@ -60,10 +60,11 @@ try {
     New-Item -ItemType Directory -Force $VendorDir | Out-Null
     Copy-Item -Path (Join-Path $TopLevel.FullName 'bin') -Destination $VendorDir -Recurse
 
-    # Verify
+    # Verify — ffprobe writes version to stderr; use local Continue scope to avoid
+    # $ErrorActionPreference = 'Stop' aborting on the stderr output (PS 5.1 quirk)
     $ProbeExe = Join-Path $VendorDir 'bin\ffprobe.exe'
     if (-not (Test-Path $ProbeExe)) { throw "ffprobe.exe not found after extraction." }
-    $Version = & $ProbeExe -version 2>&1 | Select-Object -First 1
+    $Version = & { $ErrorActionPreference = 'Continue'; & $ProbeExe -version 2>&1 | Select-Object -First 1 }
     Write-Host "Installed: $Version" -ForegroundColor Green
     Write-Host "Location : $ProbeExe"
     Write-Host ""

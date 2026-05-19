@@ -100,8 +100,12 @@ fi
 echo "Installing to $VENDOR_DIR ..."
 mkdir -p "$VENDOR_DIR/bin"
 cp "$TOP_LEVEL/ffprobe" "$VENDOR_DIR/bin/ffprobe"
-cp "$TOP_LEVEL/ffmpeg"  "$VENDOR_DIR/bin/ffmpeg"
-chmod +x "$VENDOR_DIR/bin/ffprobe" "$VENDOR_DIR/bin/ffmpeg"
+chmod +x "$VENDOR_DIR/bin/ffprobe"
+# Copy ffmpeg too if present (not required by media-agent, but useful to have)
+if [ -f "$TOP_LEVEL/ffmpeg" ]; then
+    cp "$TOP_LEVEL/ffmpeg" "$VENDOR_DIR/bin/ffmpeg"
+    chmod +x "$VENDOR_DIR/bin/ffmpeg"
+fi
 
 VERSION="$("$VENDOR_DIR/bin/ffprobe" -version 2>&1 | head -1)"
 echo "Installed: $VERSION"
