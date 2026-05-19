@@ -21,6 +21,9 @@ movies_below_720p.csv
 tvshows.json
 music.json
 
+# ffmpeg — downloaded by scripts/install_ffmpeg.*, not committed (GPL)
+vendor/ffmpeg/
+
 # OS
 .DS_Store
 Thumbs.db
