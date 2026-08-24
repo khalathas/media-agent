@@ -3,6 +3,7 @@
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -115,6 +116,67 @@ def cmd_doctor(args):
         raise SystemExit(1)
 
 
+_SECTION_NAMES = ('Movies', 'TV Shows', 'Music')
+_VIDEO_HINT_EXTS = ('.mkv', '.mp4', '.avi', '.m4v', '.mov')
+
+
+def _confirm_library_root(root):
+    """Sanity-check the folder the user gave, and say what looks wrong.
+
+    Pointing at the wrong folder is the most common setup mistake, and it fails
+    silently: every command runs fine and reports zero files. Catching it here,
+    while the user is still thinking about paths, saves them from concluding the
+    tool is broken.
+
+    Returns True to accept the folder.
+    """
+    def ask(prompt):
+        try:
+            return input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 'n'
+
+    try:
+        children = sorted(p.name for p in root.iterdir() if p.is_dir())
+    except OSError as exc:
+        print(f"  Cannot read that folder: {exc}")
+        return False
+
+    lowered = {c.lower() for c in children}
+    found = [n for n in _SECTION_NAMES if n.lower() in lowered]
+    if found:
+        print(f"  Found: {', '.join(found)}")
+        missing = [n for n in _SECTION_NAMES if n not in found]
+        if missing:
+            print(f"  Not found: {', '.join(missing)} — that is fine if you")
+            print("  do not have those, or if your folders use different names.")
+        return True
+
+    # No section folders. Did they point at a section itself?
+    try:
+        has_video = any(p.suffix.lower() in _VIDEO_HINT_EXTS
+                        for p in root.iterdir() if p.is_file())
+    except OSError:
+        has_video = False
+
+    print()
+    print("  No 'Movies', 'TV Shows' or 'Music' folder inside there.")
+    if has_video or root.name.lower() in {n.lower() for n in _SECTION_NAMES}:
+        print(f"  It looks like '{root.name}' might BE one of those folders.")
+        print(f"  If so, the answer is probably its parent:")
+        print(f"    {root.parent}")
+    elif children:
+        shown = ', '.join(children[:6]) + ('...' if len(children) > 6 else '')
+        print(f"  That folder contains: {shown}")
+    else:
+        print("  That folder is empty.")
+    print()
+    print("  You can still use this folder — media-agent lets you name your")
+    print("  section folders yourself in the config afterwards.")
+    return ask("  Use it anyway? [y/N] ") == 'y'
+
+
 def cmd_init(args):
     """Interactive first-run configuration bootstrap."""
     config_path = Path.home() / '.config' / 'media-agent' / 'config.json'
@@ -130,24 +192,41 @@ def cmd_init(args):
             print("Aborted. Existing config unchanged.")
             return
 
+    print("This is the ONE folder that contains your Movies, TV Shows and Music")
+    print("folders — not one of those folders itself.")
+    print()
+    print("  Example: if you have D:\\Media\\Movies and D:\\Media\\TV Shows,")
+    print("           then the answer is  D:\\Media")
+    print()
+
     # Prompt for library_root
     while True:
-        raw = input("Path to your Plex Media Library folder: ").strip()
+        try:
+            raw = input("Path to your media library folder: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted. No config was written.")
+            return
+        raw = raw.strip('"').strip("'")        # people paste quoted paths
         if not raw:
-            print("  library_root is required.")
+            print("  A path is required.")
             continue
         library_root = Path(raw).expanduser().resolve()
-        if library_root.is_dir():
+        if not library_root.is_dir():
+            print(f"  That folder does not exist: {library_root}")
+            print("  Check for typos, and make sure any network drive is connected.")
+            continue
+        if _confirm_library_root(library_root):
             break
-        print(f"  Directory not found: {library_root}")
-        print("  Please enter a valid path.")
 
     # Prompt for TMDB token
     print()
     print("TMDB Read Access Token (optional — required for tmdb-* commands).")
     print("Leave blank to skip; add it later via the config file or TMDB_TOKEN env var.")
     print("Get one free at: https://www.themoviedb.org/settings/api")
-    tmdb_token = input("TMDB Read Access Token: ").strip()
+    try:
+        tmdb_token = input("TMDB Read Access Token: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        tmdb_token = ''
 
     config = {
         "library_root": str(library_root),
@@ -166,10 +245,25 @@ def cmd_init(args):
 
     print()
     print(f"Config written to: {config_path}")
+
+    # Surface a missing ffprobe now, while the user is still setting up, rather
+    # than as a surprise in the middle of their first scan.
+    if not shutil.which('ffprobe') and not shutil.which('ffprobe.exe'):
+        print()
+        print("One thing still to do — ffprobe was not found. It is needed to read")
+        print("video files, so 'rescan' and 'scan-tvshows' will not work without it.")
+        print(FFMPEG_HINT)
+
     print()
     print("Next steps:")
-    print("  1. Run: python media_agent.py doctor   (verify everything is working)")
-    print("  2. Run: python media_agent.py status   (see your library stats)")
+    print("  1. media-agent doctor     check everything is set up correctly")
+    print("  2. media-agent status     see what is in your library")
     print()
-    print("To customise section paths, indexes location, or other options,")
-    print(f"edit {config_path}")
+    print("If 'media-agent' is not recognised, use 'python -m media_agent' instead.")
+    print()
+    print("Before anything that renames files, always preview it first:")
+    print("  media-agent normalize --dry-run     then read the preview file")
+    print("  media-agent normalize --apply       only once it looks right")
+    print()
+    print(f"To change section folder names or other options, edit:")
+    print(f"  {config_path}")
