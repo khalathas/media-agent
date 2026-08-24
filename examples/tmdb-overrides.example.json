@@ -1,0 +1,15 @@
+{
+  "_comment": "Optional manual fixes for movies TMDB gets wrong. Point at this file with 'tmdb_overrides_file' in your config, then run: media-agent tmdb-fix",
+
+  "_corrections": "Exact filename (as it appears on disk) -> the correct TMDB id. Find the id in the TMDB page URL: themoviedb.org/movie/8009-highlander -> 8009. Use this when the lookup confidently picked the WRONG film.",
+  "corrections": {
+    "Highlander (1992).mkv": 8009,
+    "Gremlins 1.mp4": 927
+  },
+
+  "_misspellings": "Fix typos in your filenames before searching. Lowercase fragment -> replacement. Use this when a lookup finds nothing because the filename is misspelled.",
+  "misspellings": {
+    "terrabithia": "terabithia",
+    "lightning theif": "lightning thief"
+  }
+}

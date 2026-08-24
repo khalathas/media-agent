@@ -1,18 +1,33 @@
 {
+  "_comment": "Copy this file to media_agent_config.json and edit it. The only field you MUST set is library_root. Everything set to null uses a sensible default. JSON does not allow comments, so any key starting with _ is ignored.",
+
+  "_library_root": "The folder that contains your Movies / TV Shows / Music folders. Windows users: use forward slashes, e.g. D:/Plex Media Library",
   "library_root": "/path/to/Plex Media Library",
 
+  "_sections": "Only set these if your folders are NOT named Movies, TV Shows and Music. A bare name is looked up inside library_root; a full path is used as-is.",
   "sections": {
     "movies":   null,
     "tv_shows": null,
     "music":    null
   },
 
+  "_indexes_dir": "Where to write movies.json, tvshows.json etc. null = alongside your library.",
   "indexes_dir": null,
+
+  "_reports_dir": "Where to write the --dry-run preview files. null = same as indexes_dir.",
   "reports_dir": null,
 
+  "_ffprobe_path": "null = find ffprobe automatically. Only set this if 'media-agent doctor' says it cannot find ffprobe.",
   "ffprobe_path": null,
 
-  "tmdb_read_access_token": "YOUR_TOKEN_HERE",
+  "_tmdb_read_access_token": "Only needed for the tmdb-* commands. This is the API Read Access Token (v4), NOT the API Key (v3). See the README.",
+  "tmdb_read_access_token": "",
+
+  "_skip_shows": "TV show folder names to leave completely alone during normalize-tv. Case-insensitive. Example: [\"gundam\", \"my weird folder\"]",
+  "skip_shows": [],
+
+  "_tmdb_overrides_file": "Optional. Path to a file of manual TMDB fixes for titles the lookup gets wrong. See examples/tmdb-overrides.example.json.",
+  "tmdb_overrides_file": null,
 
   "music": {
     "needs_tagging_dir": "_NeedsTagging",
