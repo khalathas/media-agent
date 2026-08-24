@@ -535,6 +535,7 @@ def _build_normalize_tv_plan(tv_root, data):
     season_renames = []   # (old_path, new_path, show_display_name)
     file_moves     = []   # (src_path, dst_path, show_display_name)
     conflicts      = []   # (reason, path)
+    claimed_dsts   = {}   # normalised destination -> the source that claimed it
 
     # Build filename -> season lookup from tvshows.json
     # Key: (show_folder, filename) -> season_num
@@ -591,13 +592,8 @@ def _build_normalize_tv_plan(tv_root, data):
         if folder == expected:
             continue  # Already correct
 
-        # Skip duplicate_candidate shows for rename? No — spec says only skip
-        # file moves for duplicate_candidate, renames are OK.
-        # But wait — duplicate shows have multiple folders. We should only rename
-        # folders that aren't duplicate_candidate at the SHOW level... actually
-        # the spec says "Skip duplicate-candidate shows (they have
-        # duplicate_candidate: True at the show level in tvshows.json)" for
-        # show folder renames. Let me re-read... yes, skip for show folder renames.
+        # Shows flagged as duplicate candidates span multiple folders; renaming
+        # one would merge folders that need a human decision first.
         if show_data and show_data.get('duplicate_candidate'):
             continue
 
@@ -729,13 +725,34 @@ def _build_normalize_tv_plan(tv_root, data):
                 if src_file == dst_file:
                     continue
 
-                # Check conflict
+                # Check for conflicts against the disk AND against destinations
+                # already claimed earlier in this same plan. Two files sharing a
+                # name in different subfolders (720p/ and 1080p/, say) both pass
+                # the disk check, because neither has moved yet. Without the
+                # claimed set, the second move silently overwrites the first and
+                # an episode is gone for good.
                 dst_disk = os.path.join(show_path_disk,
                                         target_dir if target_dir not in season_rename_map.values() else target_dir,
                                         fname)
                 if os.path.exists(dst_disk) and os.path.normpath(dst_disk) != os.path.normpath(os.path.join(dirpath, fname)):
                     conflicts.append((f"File move conflict: target exists", dst_file))
                     continue
+                dst_key = os.path.normcase(os.path.normpath(dst_file))
+                if dst_key in claimed_dsts:
+                    # Name the containing folders, not the filenames -- the
+                    # filenames are identical, that is the whole problem.
+                    def _where(pth):
+                        rel = os.path.relpath(pth, show_path_effective)
+                        parent = os.path.dirname(rel)
+                        return parent.replace(os.sep, '/') if parent else '(show root)'
+                    conflicts.append(
+                        ("Two files claim the same target — keeping both, moving "
+                         f"neither. '{os.path.basename(src_file)}' exists in "
+                         f"{_where(claimed_dsts[dst_key])} and "
+                         f"{_where(src_file)}; move or rename one by hand",
+                         dst_file))
+                    continue
+                claimed_dsts[dst_key] = src_file
 
                 file_moves.append((src_file, dst_file, effective_folder))
 
@@ -749,8 +766,16 @@ def _build_normalize_tv_plan(tv_root, data):
                         if not rel_dir:
                             srt_src = os.path.join(show_path_effective, other_file).replace('\\', '/')
                         srt_dst = os.path.join(show_path_effective, target_dir, other_file).replace('\\', '/')
-                        if srt_src != srt_dst:
-                            file_moves.append((srt_src, srt_dst, effective_folder))
+                        if srt_src == srt_dst:
+                            continue
+                        srt_key = os.path.normcase(os.path.normpath(srt_dst))
+                        if srt_key in claimed_dsts or os.path.exists(srt_dst):
+                            conflicts.append(
+                                ('Subtitle move conflict: target already claimed',
+                                 srt_dst))
+                            continue
+                        claimed_dsts[srt_key] = srt_src
+                        file_moves.append((srt_src, srt_dst, effective_folder))
 
     return {
         'show_renames':   show_renames,
@@ -827,7 +852,9 @@ def cmd_normalize_tv(args):
         print("Nothing to do — folder structure is already normalized.")
         return
 
-    apply_mode = getattr(args, 'apply', False)
+    # --dry-run wins even if --apply is also given: a user who passes both is
+    # being cautious, and the cautious reading is "don't touch anything".
+    apply_mode = getattr(args, 'apply', False) and not getattr(args, 'dry_run', False)
 
     if not apply_mode:
         print("Dry-run mode — no changes made.")
@@ -873,6 +900,13 @@ def cmd_normalize_tv(args):
         try:
             dst_dir = os.path.dirname(dst_path)
             os.makedirs(dst_dir, exist_ok=True)
+            # shutil.move overwrites silently on both platforms, so re-check
+            # right before moving: the plan was built earlier and the disk may
+            # have changed since. Never destroy an existing file.
+            if os.path.exists(dst_path):
+                print(f"  SKIPPED (target exists): {os.path.basename(src_path)}")
+                errors += 1
+                continue
             shutil.move(src_path, dst_path)
             target_season = os.path.basename(dst_dir)
             print(f"  MOVED: {show_name} / {os.path.basename(src_path)} -> {target_season}/")

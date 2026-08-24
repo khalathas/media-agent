@@ -2,30 +2,47 @@
 
 Every command in the "changes your files" group must refuse to touch anything
 unless given an explicit --apply. Passing no flag at all is a preview, never a
-mutation.
+mutation, and --yes only skips the confirmation prompt -- it never authorises
+the operation.
 
 This is the single most important guarantee the tool makes, it is stated
-plainly in the README and in `media-agent --help`, and it has been broken
-before: tmdb-canonicalize and tmdb-rename once checked only `--dry-run`, so a
-bare `media-agent tmdb-rename` renamed the whole library, and adding --yes did
-it with no prompt at all.
+plainly in the README and in `media-agent --help`, and it has been broken twice:
 
-These tests build a real library on disk and assert the files are still there
-afterwards. An earlier version of this file mocked the filesystem instead and
-passed even with the bug reintroduced -- the commands bailed out early for
-unrelated reasons and never reached the guard. Only end-to-end assertions on
-real files actually prove the contract holds.
+- tmdb-canonicalize and tmdb-rename once checked only --dry-run, so a bare
+  `media-agent tmdb-rename` renamed the whole library and --yes did it with no
+  prompt at all.
+- normalize-tv once checked only --apply and ignored --dry-run entirely, so
+  `normalize-tv --dry-run --apply` executed the full plan. A cautious user
+  passing both flags got the worst outcome.
+
+Two lessons are baked into how these tests are written:
+
+1. They build a real library on disk and compare a full before/after snapshot.
+   An earlier version mocked the filesystem and passed even with the bug
+   reintroduced, because the commands bailed out early for unrelated reasons
+   and never reached the guard.
+2. Every destructive command is covered. An earlier version claimed a
+   five-command contract in its docstring but parametrised only two -- and the
+   normalize-tv bug above lived in one of the three it skipped.
 """
-
-import json
 
 import pytest
 
-from media_agent import config as config_mod
-from media_agent.config import Config
+from media_agent.movies import cmd_normalize
+from media_agent.music import cmd_organize_music
 from media_agent.tmdb import cmd_tmdb_canonicalize, cmd_tmdb_rename
+from media_agent.tv import cmd_normalize_tv
 
-ORIGINAL = "The Matrix (1999).mkv"
+from conftest import snapshot
+
+# Every command in the "changes your files" tier. If you add one, add it here.
+DESTRUCTIVE = [
+    pytest.param(cmd_normalize,         id="normalize"),
+    pytest.param(cmd_normalize_tv,      id="normalize-tv"),
+    pytest.param(cmd_organize_music,    id="organize-music"),
+    pytest.param(cmd_tmdb_rename,       id="tmdb-rename"),
+    pytest.param(cmd_tmdb_canonicalize, id="tmdb-canonicalize"),
+]
 
 
 class Args:
@@ -40,52 +57,8 @@ class Args:
 
 
 @pytest.fixture
-def library(tmp_path):
-    """A real, minimal library with one movie that TMDB wants to rename.
-
-    Yields the path to the movie file, which must still exist under its
-    original name unless --apply was given.
-    """
-    root = tmp_path / "Library"
-    movies = root / "Movies"
-    movies.mkdir(parents=True)
-    (root / "TV Shows").mkdir()
-    (root / "Music").mkdir()
-
-    movie = movies / ORIGINAL
-    movie.write_bytes(b"not really a video")
-
-    (root / "movies.json").write_text(json.dumps({
-        "movies": [{"name": ORIGINAL, "width": 1920, "height": 1080,
-                    "resolution_class": "1080p", "extension": ".mkv",
-                    "video_codec": "h264", "audio_codec": "aac",
-                    "bitrate": "5000 kbps", "filesize": 18,
-                    "date_added": "2026-01-01 00:00:00"}]
-    }), encoding='utf-8')
-
-    # A confident match, so every command has real work queued up. If the
-    # guard fails, there is definitely something to rename.
-    (root / "movies_tmdb.json").write_text(json.dumps({
-        "movies": [{"filename": ORIGINAL, "tmdb_id": 603,
-                    "tmdb_title": "The Matrix", "tmdb_year": "1999",
-                    "match_status": "confident"}]
-    }), encoding='utf-8')
-
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
-    config_mod.set_config(Config.load(cfg_path))
-    yield movie
-    config_mod.CONFIG = None
-
-
-@pytest.fixture
 def no_input(monkeypatch):
-    """Answering the confirmation prompt is not an option.
-
-    If a command reaches the prompt without --apply it has already failed the
-    contract, so make any attempt to read stdin an outright error rather than
-    letting it block or silently take a default.
-    """
+    """Reaching the confirmation prompt without --apply is itself a failure."""
     def boom(*a, **kw):
         raise AssertionError(
             "command asked for confirmation without --apply -- it should have "
@@ -94,57 +67,62 @@ def no_input(monkeypatch):
     monkeypatch.setattr('builtins.input', boom)
 
 
-COMMANDS = [
-    pytest.param(cmd_tmdb_rename,       id="tmdb-rename"),
-    pytest.param(cmd_tmdb_canonicalize, id="tmdb-canonicalize"),
-]
+def run(command, args, library):
+    """Run a command and return (before, after) snapshots of the media tree."""
+    before = snapshot(library["root"])
+    try:
+        command(args)
+    except SystemExit:
+        pass          # refusing loudly is a valid way to be safe
+    return before, snapshot(library["root"])
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_no_flags_does_not_rename(command, library, no_input):
+@pytest.mark.parametrize("command", DESTRUCTIVE)
+def test_no_flags_changes_nothing(command, library, no_input):
     """The headline guarantee: a bare command name is harmless."""
-    command(Args())
-    assert library.exists(), (
-        f"{library.name} was renamed with no --apply flag -- "
-        "the safety contract is broken"
-    )
+    before, after = run(command, Args(), library)
+    assert after == before, "files changed with no --apply flag"
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_yes_without_apply_does_not_rename(command, library, no_input):
-    """--yes skips the prompt; it must not stand in for --apply.
+@pytest.mark.parametrize("command", DESTRUCTIVE)
+def test_yes_alone_changes_nothing(command, library, no_input):
+    """--yes must not stand in for --apply.
 
-    This is the genuinely dangerous combination -- a whole library renamed
-    with no preview and no confirmation.
+    The genuinely dangerous combination: a whole library rewritten with no
+    preview and no confirmation.
     """
-    command(Args(yes=True))
-    assert library.exists(), (
-        f"{library.name} was renamed by --yes alone -- "
-        "--yes must only skip the prompt, never authorise the operation"
-    )
+    before, after = run(command, Args(yes=True), library)
+    assert after == before, "--yes alone changed files; it must only skip the prompt"
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_dry_run_does_not_rename(command, library, no_input):
-    command(Args(dry_run=True))
-    assert library.exists()
+@pytest.mark.parametrize("command", DESTRUCTIVE)
+def test_dry_run_changes_nothing(command, library, no_input):
+    before, after = run(command, Args(dry_run=True), library)
+    assert after == before, "--dry-run changed files"
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_dry_run_with_yes_does_not_rename(command, library, no_input):
-    command(Args(dry_run=True, yes=True))
-    assert library.exists()
+@pytest.mark.parametrize("command", DESTRUCTIVE)
+def test_dry_run_wins_over_apply(command, library, no_input):
+    """Both flags at once must be the safe reading.
 
-
-@pytest.mark.parametrize("command", COMMANDS)
-def test_apply_does_rename(command, library):
-    """The other half of the contract: --apply must actually work.
-
-    Without this, a command that refused to do anything at all would pass
-    every test above.
+    Someone who passes --dry-run and --apply together is being careful. They
+    must not get the destructive interpretation. This is the exact case that
+    normalize-tv failed.
     """
-    command(Args(apply=True, yes=True))
-    assert not library.exists(), "--apply did not rename the file"
-    renamed = list(library.parent.glob("*.mkv"))
-    assert len(renamed) == 1
-    assert "tmdb-603" in renamed[0].name
+    before, after = run(command, Args(dry_run=True, apply=True, yes=True), library)
+    assert after == before, "--dry-run --apply together changed files"
+
+
+@pytest.mark.parametrize("command", DESTRUCTIVE)
+def test_apply_actually_does_something(command, library):
+    """The other half of the contract.
+
+    Without this, a command that refused to do anything at all would sail
+    through every test above, and the fixture having no pending work would go
+    unnoticed -- making all the tests vacuous.
+    """
+    before, after = run(command, Args(apply=True, yes=True), library)
+    assert after != before, (
+        "--apply made no change; either the command is broken or the fixture "
+        "has no pending work, which would make the other tests meaningless"
+    )
