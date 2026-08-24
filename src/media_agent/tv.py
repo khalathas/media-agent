@@ -231,6 +231,42 @@ def find_external_subtitles(video_path):
     return sorted(srts)
 
 
+def _episode_path_key(fpath):
+    """A stable identity for an episode file: its path below the TV root.
+
+    Filenames alone are not identities. "S01E01.mkv" occurs in most shows in a
+    library, so a cache keyed by filename hands one show another show's probe
+    data -- and its season, including a season the user set by hand with
+    reassign-season. Lowercased because Windows paths are case-insensitive.
+    """
+    try:
+        rel = os.path.relpath(fpath, get_config().sections['tv_shows'])
+    except ValueError:
+        rel = fpath           # different drive; fall back to the absolute path
+    return rel.replace(os.sep, '/').replace('\\', '/').lower()
+
+
+def _show_scoped_key(show_folder, fname):
+    """Fallback identity for indexes written before paths were recorded.
+
+    Weaker than the path key -- it cannot tell 720p/S01E01.mkv from
+    1080p/S01E01.mkv inside one show -- but it does prevent the far worse
+    cross-show collision, and it lets an existing index keep its probe data
+    instead of forcing a full re-probe of the whole library.
+    """
+    return f"{show_folder}/{fname}".replace('\\', '/').lower()
+
+
+def _lookup_existing(existing_episodes, fpath, show_folder, fname):
+    """Find a cached episode, preferring the precise key."""
+    if not existing_episodes:
+        return None
+    hit = existing_episodes.get(_episode_path_key(fpath))
+    if hit is not None:
+        return hit
+    return existing_episodes.get(_show_scoped_key(show_folder, fname))
+
+
 def _build_episode(fname, fpath, season_from_folder=None, existing=None):
     """
     Build a single episode dict.
@@ -245,6 +281,7 @@ def _build_episode(fname, fpath, season_from_folder=None, existing=None):
 
     ep = {
         'filename':           fname,
+        'path':               _episode_path_key(fpath),
         'episode':            ep_info['episode'],
         'multi_episode':      ep_info['multi_episode'],
         'title':              ep_info['title'],
@@ -294,12 +331,14 @@ def _build_episode(fname, fpath, season_from_folder=None, existing=None):
     return ep, bucket
 
 
-def _collect_episodes_from_dir(dir_path, season_hint=None, existing_episodes=None):
+def _collect_episodes_from_dir(dir_path, season_hint=None, existing_episodes=None,
+                               show_folder=''):
     """
     Walk a directory (non-recursively) and return list of (ep_dict, season_bucket)
     for every video file found. Skips non-video files.
     season_hint: if set, used as season_from_folder for all files here.
-    existing_episodes: {filename: episode_dict} from prior index for probe reuse.
+    existing_episodes: cache from a prior index, keyed by episode path.
+    show_folder: the show's top-level folder name, used for the fallback key.
     """
     results = []
     try:
@@ -307,7 +346,7 @@ def _collect_episodes_from_dir(dir_path, season_hint=None, existing_episodes=Non
             if os.path.splitext(fname)[1].lower() not in get_config().video_exts:
                 continue
             fpath = os.path.join(dir_path, fname).replace('\\', '/')
-            existing = existing_episodes.get(fname) if existing_episodes else None
+            existing = _lookup_existing(existing_episodes, fpath, show_folder, fname)
             ep, bucket = _build_episode(fname, fpath, season_from_folder=season_hint,
                                         existing=existing)
             results.append((ep, bucket))
@@ -384,13 +423,14 @@ def scan_tv_shows(existing_episodes=None):
             season_num = int(m.group(1)) if m else 0
             season_path = os.path.join(show_path, season_dir)
             for ep, _ in _collect_episodes_from_dir(season_path, season_hint=season_num,
-                                                     existing_episodes=existing_episodes):
+                                                     existing_episodes=existing_episodes,
+                       show_folder=folder):
                 add_ep(ep, season_num)
 
         # 2. Flat video files directly in show folder — infer season from filename
         for fname in sorted(flat_videos):
             fpath = os.path.join(show_path, fname).replace('\\', '/')
-            existing = existing_episodes.get(fname) if existing_episodes else None
+            existing = _lookup_existing(existing_episodes, fpath, folder, fname)
             ep, bucket = _build_episode(fname, fpath, season_from_folder=None,
                                         existing=existing)
             add_ep(ep, bucket)
@@ -423,24 +463,28 @@ def scan_tv_shows(existing_episodes=None):
                     season_num  = int(m.group()) if m else 0
                     season_path = os.path.join(sub_path, season_dir)
                     for ep, _ in _collect_episodes_from_dir(season_path, season_hint=season_num,
-                                                             existing_episodes=existing_episodes):
+                                                             existing_episodes=existing_episodes,
+                       show_folder=folder):
                         add_ep(ep, season_num)
             elif sub_other_dirs:
                 # Deeper nesting (e.g. Doctor Who Classic: show → actor → serial → episodes)
                 # Also collect any flat video files directly in sub_path itself
                 # (e.g. a pack folder that has episodes + a Subs/ subfolder alongside them)
                 for ep, bucket in _collect_episodes_from_dir(sub_path, season_hint=None,
-                                                              existing_episodes=existing_episodes):
+                                                              existing_episodes=existing_episodes,
+                       show_folder=folder):
                     add_ep(ep, bucket)
                 for deep_sub in sorted(sub_other_dirs):
                     deep_path = os.path.join(sub_path, deep_sub)
                     for ep, bucket in _collect_episodes_from_dir(deep_path, season_hint=None,
-                                                                  existing_episodes=existing_episodes):
+                                                                  existing_episodes=existing_episodes,
+                       show_folder=folder):
                         add_ep(ep, bucket)
             else:
                 # Flat files in a subdirectory — infer season from filenames
                 for ep, bucket in _collect_episodes_from_dir(sub_path, season_hint=None,
-                                                              existing_episodes=existing_episodes):
+                                                              existing_episodes=existing_episodes,
+                       show_folder=folder):
                     add_ep(ep, bucket)
 
         # Build seasons list: sort seasons numerically, season 0 always last
@@ -1096,12 +1140,30 @@ def cmd_scan_tvshows(args):
         with open(get_config().indexes['tvshows'], encoding='utf-8') as f:
             old_data = json.load(f)
         existing_episodes = {}
+        legacy = 0
         for show in old_data.get('shows', []):
+            show_folder = show.get('folder', '')
             for season in show.get('seasons', []):
                 for ep in season.get('episodes', []):
-                    existing_episodes[ep['filename']] = {**ep, '_season': season['season']}
+                    entry = {**ep, '_season': season['season']}
+                    # Key by the episode's path. Keying by filename alone made
+                    # every "S01E01.mkv" in the library collide, so one show
+                    # inherited another's probe data and season.
+                    if ep.get('path'):
+                        existing_episodes[ep['path']] = entry
+                    else:
+                        # Written before paths were recorded. Scope to the show
+                        # so an old index still gets an incremental rescan
+                        # rather than a full re-probe of the whole library.
+                        existing_episodes[_show_scoped_key(show_folder,
+                                                           ep['filename'])] = entry
+                        legacy += 1
                     old_filenames.add(ep['filename'])
-        print(f"  {len(existing_episodes)} episodes already indexed — probe data will be reused.\n")
+        print(f"  {len(existing_episodes)} episodes already indexed — probe data will be reused.")
+        if legacy:
+            print(f"  {legacy} of them predate per-episode paths; this scan records "
+                  "them, so the next rescan is more precise.")
+        print()
     else:
         if rescan_mode:
             print("No existing tvshows.json found — performing full scan.\n")
