@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .config import get_config
+from .config import FFMPEG_HINT, get_config
 
 
 _TMDB_TOKEN_HINT = """\
@@ -42,7 +42,7 @@ def cmd_doctor(args):
             ok = False
     else:
         print("  [!!] ffprobe     : NOT FOUND")
-        print("       Run scripts/install_ffmpeg.ps1 (Windows) or scripts/install_ffmpeg.sh")
+        print(FFMPEG_HINT)
         ok = False
 
     # mutagen

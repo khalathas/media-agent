@@ -25,6 +25,16 @@ _TOKEN_PLACEHOLDERS = frozenset({
 
 TMDB_TOKEN_ENV = "TMDB_TOKEN"
 
+# Shown wherever ffprobe is missing. Deliberately package-manager first: most
+# people who install with pip have no repo checkout, so pointing them at a
+# script in scripts/ would name a file they do not have.
+FFMPEG_HINT = """  Install ffmpeg, then reopen your terminal:
+    Windows : winget install Gyan.FFmpeg
+    macOS   : brew install ffmpeg
+    Linux   : sudo apt install ffmpeg   (or your distro's package manager)
+  Or download from https://ffmpeg.org/download.html and add it to your PATH.
+  If it is installed somewhere unusual, set 'ffprobe_path' in your config."""
+
 _DEFAULT_VIDEO_EXTS = frozenset({
     '.mkv', '.mp4', '.avi', '.mov', '.m4v', '.wmv', '.flv',
     '.ts', '.m2ts', '.mpg', '.mpeg', '.vob', '.divx', '.webm', '.ogm',
@@ -81,8 +91,7 @@ class Config:
             print(
                 "ERROR: No media_agent_config.json found.\n"
                 f"Searched:\n  {searched}\n\n"
-                "Copy media_agent_config.EXAMPLE.json to one of the above paths "
-                "and set 'library_root'.",
+                "Run 'media-agent init' to create one.",
                 file=sys.stderr,
             )
             sys.exit(2)

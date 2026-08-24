@@ -3,6 +3,7 @@
 import csv
 import json
 import os
+import sys
 
 from .config import get_config
 from .probe import classify_resolution
@@ -42,9 +43,25 @@ def write_json_atomic(path, data):
 
 
 def load_movies_json():
+    """Load movies.json, or an empty index if it does not exist yet.
+
+    A brand new library has no index -- that is the normal starting state, not
+    an error. `status` is the first command the docs tell people to run, so it
+    must report "no index yet" rather than raise FileNotFoundError at someone
+    who has just installed the tool.
+    """
     path = get_config().indexes['movies']
-    with open(path, encoding='utf-8') as f:
-        return json.load(f)
+    if not os.path.exists(path):
+        return {'movies': []}
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError as exc:
+        # A corrupt index is a real problem and must not look like an empty one,
+        # or rescan would happily "reconcile" it by discarding every entry.
+        print(f"ERROR: {path} is not valid JSON ({exc}).")
+        print("  Delete it and run 'media-agent rescan' to rebuild from disk.")
+        sys.exit(2)
 
 
 def save_movies_json(data):

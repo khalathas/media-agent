@@ -212,7 +212,8 @@ def _print_config_block():
             print(f"  section/{key:<8}: (not configured)")
     print(f"  indexes_dir   : {get_config().indexes_dir}")
     print(f"  reports_dir   : {get_config().reports_dir}")
-    ffprobe_display = get_config().ffprobe if get_config().ffprobe else "NOT FOUND — run scripts/install_ffmpeg"
+    ffprobe_display = (get_config().ffprobe or
+                       "NOT FOUND — run 'media-agent doctor' to see how to install it")
     print(f"  ffprobe       : {ffprobe_display}")
     token_display = "set" if get_config().tmdb_token else "not set"
     print(f"  TMDB token    : {token_display}")
@@ -265,5 +266,8 @@ def cmd_status(args):
                        if (m.get('height') or 0) < 720 and (m.get('width') or 0) < 1280)
         sync = "OK" if csv_count == expected else f"OUT OF SYNC (has {csv_count}, expected {expected})"
         print(f"\nmovies_below_720p.csv: {csv_count} rows [{sync}]")
+    except FileNotFoundError:
+        # Normal on a brand new library -- not something to alarm anyone with.
+        print("\nmovies_below_720p.csv: not built yet — run 'media-agent rescan'")
     except Exception as e:
         print(f"\nmovies_below_720p.csv: could not read ({e})")
