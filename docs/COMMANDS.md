@@ -107,6 +107,10 @@ For each new file it runs ffprobe to record resolution, codecs, bitrate, and siz
 
 **The first run is slow** — it opens every video file. Over a network drive, a large library can take a long while. Later runs only probe files it hasn't seen.
 
+**Films are identified by where they are, not just what they're called.** Two folders can each hold a `Movie.mkv` and be different films, so each file gets its own index entry. If you're upgrading from an older version, the first `rescan` records the location of each already-indexed film — it does **not** re-probe them, so it stays fast.
+
+If two files genuinely share a name, `rescan` lists both locations. Those are worth a look; they're usually true duplicates you can delete one of.
+
 **If ffprobe fails on some files** they're reported as `FAILED` in the output. (`scan-tvshows` writes its failures to `probe_failures.txt`; `rescan` prints them inline.) Usually those files are genuinely corrupt, which is useful to know.
 
 ---
@@ -325,7 +329,13 @@ Breaking.Bad\                    Breaking Bad (2008)\
 >
 > Unchanged episode filenames after running this is **correct behaviour**, not a failure.
 
-**Conflicts are reported and skipped, never guessed at** — an episode whose season can't be determined, or a target file that already exists. Those need your attention; nothing is overwritten.
+**Conflicts are reported and skipped, never guessed at.** Three kinds:
+
+- an episode whose season can't be worked out from its filename
+- a target file that already exists
+- two files in different subfolders (`720p/` and `1080p/`, say) that would both move to the same place — media-agent moves *neither* and names both folders, because moving them in sequence would mean the second silently replacing the first
+
+Nothing is ever overwritten.
 
 To exclude a show entirely, add its folder name to [`skip_shows`](CONFIGURATION.md#skip_shows).
 

@@ -232,6 +232,7 @@ Conflicts are reported and **skipped, never guessed at**. Two kinds:
 
 - **"Unknown season for file"** — the filename has no recognisable episode marker. Rename it to `SxxExx` form and rescan.
 - **"File move conflict: target exists"** — a file of that name is already in the destination. Usually a genuine duplicate; compare the two and remove the one you don't want.
+- **"Two files claim the same target"** — the same episode filename exists in two subfolders of one show, often `720p/` and `1080p/`. Both would land in the same season folder, so neither is moved. The message names both folders. Keep the one you want, or rename them so they differ, then run it again.
 
 Nothing is overwritten.
 
