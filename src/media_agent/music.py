@@ -383,53 +383,74 @@ def cmd_organize_music(args):
     # Both copies go to _NeedsTagging/_Collisions/Artist/Album/ using their
     # ORIGINAL filenames so the user can compare and decide.
     collisions_root = os.path.join(music_root, get_config().music_collisions_dir)
-    dst_seen    = {}   # norm_dst → (src, index_in_deduped)
     deduped_moves   = []
     collision_moves = []
+    collision_groups = 0
+
+    # Every destination this plan will write, normalised. Consulted before
+    # handing out any new one, so no two moves can ever target the same path.
+    reserved = {d.lower() for _, d in moves
+                if get_config().music_needs_tagging_dir in d}
 
     def _collision_dst(src, shared_dst):
-        """Return destination path inside _Collisions, keeping original filename."""
-        rel_album = os.path.dirname(
-            shared_dst.replace(music_root_norm + '/', ''))
-        col_dir  = os.path.join(collisions_root, rel_album).replace('\\', '/')
-        col_name = os.path.basename(src)
-        col_path = os.path.join(col_dir, col_name).replace('\\', '/')
-        # If two sources share even their original filename, append a counter
-        seen_col = [d for _, d in collision_moves if os.path.dirname(d) == col_dir]
-        if col_path in seen_col:
-            base, ext = os.path.splitext(col_name)
-            col_path  = os.path.join(col_dir, f"{base}_2{ext}").replace('\\', '/')
-        return col_path
+        """A free destination inside _Collisions, keeping the original filename.
 
+        The counter is unbounded. A fixed _2 fallback broke as soon as three
+        files shared both a destination and an original filename.
+        """
+        rel_album = os.path.dirname(shared_dst.replace(music_root_norm + '/', ''))
+        col_dir   = os.path.join(collisions_root, rel_album).replace('\\', '/')
+        col_name  = os.path.basename(src)
+        base, ext = os.path.splitext(col_name)
+        candidate = os.path.join(col_dir, col_name).replace('\\', '/')
+        n = 1
+        while candidate.lower() in reserved or os.path.exists(candidate):
+            n += 1
+            candidate = os.path.join(col_dir, f"{base}_{n}{ext}").replace('\\', '/')
+        return candidate
+
+    # Group by destination first, so a path claimed by several sources is
+    # handled once however many claim it. Rerouting pairs as they were
+    # encountered re-queued the first source on every later collision, which
+    # produced a move whose file had already been moved away.
+    by_dst, order = {}, []
     for src, dst in moves:
         if get_config().music_needs_tagging_dir in dst:
             deduped_moves.append((src, dst))
             continue
-        norm_dst = dst.lower()
-        if norm_dst in dst_seen:
-            winner_src, winner_idx = dst_seen[norm_dst]
-            # Reroute the winner out of deduped_moves and into collisions
-            deduped_moves[winner_idx] = None   # mark for removal
-            collision_moves.append((winner_src, _collision_dst(winner_src, dst)))
-            collision_moves.append((src,        _collision_dst(src, dst)))
-        else:
-            dst_seen[norm_dst] = (src, len(deduped_moves))
-            deduped_moves.append((src, dst))
+        key = dst.lower()
+        if key not in by_dst:
+            by_dst[key] = []
+            order.append((key, dst))
+        by_dst[key].append(src)
 
-    deduped_moves = [(s, d) for s, d in deduped_moves if s is not None]
+    for key, dst in order:
+        sources = by_dst[key]
+        if len(sources) == 1:
+            deduped_moves.append((sources[0], dst))
+            reserved.add(key)
+            continue
+        # Two or more want this path. None of them gets it; all are set aside
+        # under their original names so the user can compare them.
+        collision_groups += 1
+        for src in sources:
+            col_dst = _collision_dst(src, dst)
+            reserved.add(col_dst.lower())
+            collision_moves.append((src, col_dst))
+
     moves = deduped_moves + collision_moves
 
     # Report plan
     well_moves      = [(s, d) for s, d in moves if get_config().music_needs_tagging_dir not in d]
     tagging_moves   = [(s, d) for s, d in moves if get_config().music_needs_tagging_dir in d
                        and get_config().music_collisions_dir not in d]
-    collision_pairs = len(collision_moves) // 2  # each collision = 2 files
+    # Counted per group, not per pair -- three files can contend for one path.
 
     print(f"Plan:")
     print(f"  Files to organize (well-tagged flat):  {len(well_moves)}")
     print(f"  Files to hold for tagging:             {len(tagging_moves)}")
     if collision_moves:
-        print(f"  Collision pairs → _Collisions/:        {collision_pairs} pairs ({len(collision_moves)} files)")
+        print(f"  Collisions → _Collisions/:            {collision_groups} groups ({len(collision_moves)} files)")
     print(f"  Junk files to delete:                  {len(junk_dels)}")
     print(f"  Conflicts (dst exists, skipped):        {len(conflicts)}")
 
@@ -481,10 +502,34 @@ def cmd_organize_music(args):
 
     ok = deleted = errors = 0
 
+    def _inside_music_root(path):
+        """True if path is within the music library.
+
+        Checked immediately before every move and delete. The config values that
+        build these paths are validated on load, but this is the last point
+        where a mistake is still recoverable, and the cost of being wrong is
+        moving or deleting someone's files outside the folder they pointed us at.
+        """
+        try:
+            root = os.path.realpath(music_root)
+            target = os.path.realpath(path)
+            return os.path.commonpath([root, target]) == root
+        except ValueError:
+            return False        # different drive: definitely not inside
+
     for src, dst in moves:
+        if not _inside_music_root(dst):
+            print(f"  REFUSED (outside your music folder): {dst}")
+            errors += 1
+            continue
         dst_dir = os.path.dirname(dst)
         try:
             os.makedirs(dst_dir, exist_ok=True)
+            if os.path.exists(dst):
+                # Planned earlier; the disk may have changed since.
+                print(f"  SKIPPED (target exists): {os.path.basename(src)}")
+                errors += 1
+                continue
             shutil.move(src, dst)
             ok += 1
         except Exception as e:
@@ -492,6 +537,10 @@ def cmd_organize_music(args):
             errors += 1
 
     for fpath in junk_dels:
+        if not _inside_music_root(fpath):
+            print(f"  REFUSED to delete (outside your music folder): {fpath}")
+            errors += 1
+            continue
         try:
             # Remove read-only flag if needed before deleting
             if not os.access(fpath, os.W_OK):

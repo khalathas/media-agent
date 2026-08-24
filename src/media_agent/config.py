@@ -190,8 +190,12 @@ class Config:
             music_exts             = music_exts,
             music_junk_names       = junk_names,
             music_junk_patterns    = junk_patterns,
-            music_needs_tagging_dir = music_cfg.get('needs_tagging_dir', '_NeedsTagging'),
-            music_collisions_dir    = music_cfg.get('collisions_dir', '_NeedsTagging/_Collisions'),
+            music_needs_tagging_dir = cls._safe_subdir(
+                music_cfg.get('needs_tagging_dir'), '_NeedsTagging',
+                'music.needs_tagging_dir'),
+            music_collisions_dir    = cls._safe_subdir(
+                music_cfg.get('collisions_dir'), '_NeedsTagging/_Collisions',
+                'music.collisions_dir'),
             skip_shows              = frozenset(
                 s.strip().lower() for s in raw.get('skip_shows', []) if s.strip()),
             tmdb_corrections        = overrides.get('corrections', {}),
@@ -240,6 +244,31 @@ class Config:
             p.mkdir(parents=True, exist_ok=True)
             return p
         return default
+
+    @staticmethod
+    def _safe_subdir(raw_val, default: str, field: str) -> str:
+        """Validate a folder name that lives *inside* a media section.
+
+        organize-music moves files into these, so an absolute path or a '..'
+        would move media out of the library entirely -- somewhere the user is
+        not looking and did not agree to. Only a plain relative subpath is
+        accepted; anything else falls back to the default with a warning rather
+        than silently relocating someone's music.
+        """
+        if not raw_val:
+            return default
+        value = str(raw_val).strip().replace('\\', '/')
+        bad = (
+            os.path.isabs(value)
+            or (len(value) > 1 and value[1] == ':')        # Windows drive letter
+            or value.startswith('/')
+            or any(part == '..' for part in value.split('/'))
+        )
+        if bad:
+            print(f"WARNING: {field} must be a folder inside your music library, "
+                  f"not '{raw_val}'. Using '{default}' instead.")
+            return default
+        return value.strip('/')
 
     @staticmethod
     def _load_tmdb_overrides(raw_val, config_path: Path) -> dict:
