@@ -2,6 +2,7 @@
 
 import csv
 import json
+import os
 
 from .config import get_config
 from .probe import classify_resolution
@@ -12,6 +13,34 @@ LOW_RES_COLS = ['name', 'width', 'height', 'resolution_class',
                 'bitrate', 'filesize', 'date_added']
 
 
+
+def write_json_atomic(path, data):
+    """Write JSON so an interrupted write cannot destroy the previous index.
+
+    Writing straight to the destination means a crash, a full disk, or a
+    dropped network share leaves a truncated file where the index used to be --
+    and rebuilding it means re-probing the entire library. Instead write a
+    temporary file alongside the target, flush it to disk, then rename it into
+    place. os.replace is atomic on both Windows and POSIX, so the destination
+    is only ever the old file or the complete new one.
+    """
+    path = str(path)
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        # Never leave a stray .tmp behind to confuse the user.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def load_movies_json():
     path = get_config().indexes['movies']
     with open(path, encoding='utf-8') as f:
@@ -20,8 +49,7 @@ def load_movies_json():
 
 def save_movies_json(data):
     path = get_config().indexes['movies']
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    write_json_atomic(path, data)
 
 
 def _check_low_res_sync(movies):

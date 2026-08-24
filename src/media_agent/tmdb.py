@@ -10,7 +10,7 @@ from datetime import datetime
 
 from .config import TMDB_API_BASE, TMDB_TOKEN_ENV, get_config
 from .console import confirm
-from .index import load_movies_json, save_movies_json
+from .index import load_movies_json, save_movies_json, write_json_atomic
 from .naming import _STRIP_RE, _YEAR_RE, _canonical_filename
 from .probe import scan_video_files
 
@@ -254,8 +254,7 @@ def cmd_tmdb_enrich(args):
         "generated": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "movies":    results_list,
     }
-    with open(tmdb_path, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    write_json_atomic(tmdb_path, output)
 
     print(f"\n{'='*60}")
     print(f"TMDB enrichment complete — {total} movies processed")
@@ -395,8 +394,7 @@ def cmd_tmdb_canonicalize(args):
         data['movies'].sort(key=lambda m: m['name'].lower())
         save_movies_json(data)
         tmdb_data['movies'] = list(tmdb_by_name.values())
-        with open(tmdb_path, 'w', encoding='utf-8') as f:
-            json.dump(tmdb_data, f, indent=2, ensure_ascii=False)
+        write_json_atomic(tmdb_path, tmdb_data)
         print(f"\nRenamed {renamed} files.")
         print(f"Updated: movies.json, movies_tmdb.json")
         if failed:
@@ -508,8 +506,7 @@ def cmd_tmdb_rename(args):
         data['movies'].sort(key=lambda m: m['name'].lower())
         save_movies_json(data)
         tmdb_data['movies'] = list(tmdb_by_name.values())
-        with open(tmdb_path, 'w', encoding='utf-8') as f:
-            json.dump(tmdb_data, f, indent=2, ensure_ascii=False)
+        write_json_atomic(tmdb_path, tmdb_data)
         print(f"\nRenamed {renamed} files.")
         print(f"Updated: movies.json, movies_tmdb.json")
         if failed:
@@ -723,8 +720,7 @@ def cmd_tmdb_fix(args):
             retry_missing += 1
 
     # Save
-    with open(tmdb_path, 'w', encoding='utf-8') as f:
-        json.dump(tmdb_data, f, indent=2, ensure_ascii=False)
+    write_json_atomic(tmdb_path, tmdb_data)
 
     print(f"\n{'='*60}")
     print(f"tmdb-fix complete:")

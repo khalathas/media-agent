@@ -9,6 +9,7 @@ from datetime import datetime
 
 from .config import get_config
 from .console import confirm
+from .index import write_json_atomic
 from .naming import _sanitize_path_component
 
 
@@ -184,8 +185,7 @@ def cmd_scan_music(args):
     }
 
     index_path = get_config().indexes['music']
-    with open(index_path, 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
+    write_json_atomic(index_path, out)
 
     print(f"{'=' * 60}")
     print(f"Music scan complete.")

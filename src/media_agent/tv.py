@@ -8,6 +8,7 @@ import subprocess
 from datetime import datetime
 
 from .config import get_config
+from .index import write_json_atomic
 
 
 _TV_STRIP_RE = re.compile(
@@ -898,8 +899,7 @@ def cmd_normalize_tv(args):
         'shows':     shows,
     }
 
-    with open(index_path, 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
+    write_json_atomic(index_path, out)
 
     print(f"\nRescan complete.")
     print(f"  Shows:    {total_shows}")
@@ -997,8 +997,7 @@ def cmd_reassign_season(args):
 
     # Save
     data['generated'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    with open(index_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(index_path, data)
 
     print(f"\nDone. {changed} episode(s) reassigned.")
     print(f"Index saved to: {index_path}")
@@ -1069,8 +1068,7 @@ def cmd_scan_tvshows(args):
     }
 
     index_path = get_config().indexes['tvshows']
-    with open(index_path, 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
+    write_json_atomic(index_path, out)
 
     print(f"\n{'=' * 60}")
     print(f"TV Shows scan complete.")
