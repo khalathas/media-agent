@@ -1,16 +1,16 @@
 # Media Agent — Independent Second-Pass Review
 
 **Date:** 2026-08-24  
-**Branch reviewed:** `feature/package-split` at `27151e0`  
+**Branch reviewed:** `feature/package-split` at `cbe60c5`  
 **Baseline:** `main` at `cbd3f3d`  
 **Input trust:** The coding-agent brief was treated only as a checklist of claims. Every disposition below was independently checked against the current code, documentation, tests, and Git state.  
 **Verdict:** **Changes requested — not ready for public release.**
 
-> **Snapshot integrity note:** The working tree was clean when the review and verification began. Afterward, an unrelated uncommitted modification appeared in `src/media_agent/doctor.py`; it was not created by this review and was left untouched. Findings are therefore anchored to committed revision `27151e0`. That later edit must be committed and separately reviewed before it can be included in a release assessment.
+> **Continuation note:** This remains the second-pass review. The previously concurrent `doctor.py` work is now committed as `cbe60c5`, the coding agent stopped changing the tree, and that commit plus its new tests were included in the resumed review.
 
 ## Executive summary
 
-The branch is substantially safer than the first-pass version. Path-based movie and episode identities, atomic JSON writes, filesystem containment checks, packaging, CI, and the expanded test suite are real improvements. All 120 tests pass, byte-compilation succeeds, and both wheel and source distributions build.
+The branch is substantially safer than the first-pass version. Path-based movie and episode identities, atomic JSON writes, filesystem containment checks, packaging, CI, and the expanded test suite are real improvements. All 132 tests pass, byte-compilation succeeds, and both wheel and source distributions build.
 
 However, the supplied brief overstates completion. One original P1 release blocker remains open: the FFmpeg fallback scripts still execute unverified floating downloads. Six major correctness, safety, and documentation-alignment issues also remain. Most notably, TV conflict handling promises to move neither file but actually leaves the first move queued, and ambiguous movie-index migration can delete the only legacy index record without successfully replacing it.
 
@@ -19,7 +19,7 @@ However, the supplied brief overstates completion. One original P1 release block
 - Reviewed all current source modules, tests, scripts, packaging metadata, configuration examples, README, and files under `docs/`.
 - Compared `main..feature/package-split` and inspected branch/commit state.
 - Verified that the intended package, tests, examples, and metadata are tracked.
-- Ran the complete suite in an independent runtime: **120 passed in 3.44 seconds**.
+- Ran the complete suite in an independent runtime after the continuation update: **132 passed in 4.01 seconds**.
 - Successfully byte-compiled `src/` and `tests/` under Python 3.12.
 - Successfully built `media_agent-0.2.0.tar.gz` and `media_agent-0.2.0-py3-none-any.whl`.
 
@@ -63,7 +63,7 @@ Project-level documentation says every mutating command previews by default and 
 
 ### P2-4: TMDB credential handling remains inconsistent and insecure
 
-**Locations:** `src/media_agent/doctor.py:81-83`, `:145-164`; `src/media_agent/tmdb.py:21-24`; `docs/TROUBLESHOOTING.md:305`.
+**Locations:** `src/media_agent/doctor.py:81-83`, `:222-241`; `src/media_agent/tmdb.py:21-24`; `docs/TROUBLESHOOTING.md:305`.
 
 Runtime TMDB calls and documentation give `TMDB_TOKEN` precedence, while `doctor` prefers the config token. Doctor can therefore validate a different credential from the one commands use. `init` also collects the token with visible `input()` and creates the config without explicitly restricting permissions.
 
@@ -171,6 +171,7 @@ These are lower risk than the findings above but should remain visible in the ba
 - The expanded safety tests exercise real temporary libraries and include a non-vacuity assertion that apply actually changes something.
 - Packaging now produces both wheel and source distributions successfully.
 - Documentation is much more accessible for non-technical users and now honestly describes music-junk deletion and the FFmpeg fallback risk.
+- The `cbe60c5` first-run update correctly catches likely section-folder mistakes, handles quoted Windows paths and interrupted input, surfaces missing ffprobe earlier, removes obsolete entry-point guidance from `init`, and confines its new tests to a redirected home directory.
 
 ## Release recommendation
 
