@@ -64,8 +64,27 @@ def get_media_info(file_path):
         return {'error': str(e)}
 
 
+def video_path_key(fpath, section_path):
+    """A stable identity for a video file: its path below its section folder.
+
+    A filename is not an identity. Two folders can each hold a "Movie.mkv", and
+    they may be different films or different cuts of one. Keying by basename
+    collapsed them into a single entry, so one copy went unindexed and renames
+    acted on whichever path happened to come first.
+    """
+    try:
+        rel = os.path.relpath(fpath, section_path)
+    except ValueError:
+        rel = fpath           # different drive; fall back to the absolute path
+    return rel.replace(os.sep, '/').replace('\\', '/')
+
+
 def scan_video_files(section_path):
-    """Return dict of {filename: full_path} for all video files under path."""
+    """Return {path_key: full_path} for every video file under section_path.
+
+    One entry per real file on disk. Duplicate basenames in different folders
+    stay distinct, because their path keys differ.
+    """
     files = {}
     for root, dirs, fnames in os.walk(section_path):
         dirs[:] = sorted(d for d in dirs
@@ -73,13 +92,17 @@ def scan_video_files(section_path):
         for fname in fnames:
             if os.path.splitext(fname)[1].lower() in get_config().video_exts:
                 fpath = os.path.join(root, fname).replace('\\', '/')
-                if fname in files:
-                    # Duplicate filename in different subdirs — keep both with paths
-                    existing = files[fname]
-                    if isinstance(existing, str):
-                        files[fname] = [existing, fpath]
-                    else:
-                        existing.append(fpath)
-                else:
-                    files[fname] = fpath
+                files[video_path_key(fpath, section_path)] = fpath
     return files
+
+
+def group_by_basename(disk_files):
+    """Group a scan result by filename: {basename: [path_key, ...]}.
+
+    Used to migrate index entries written before paths were recorded, and to
+    spot basenames that are genuinely ambiguous.
+    """
+    by_name = {}
+    for key in disk_files:
+        by_name.setdefault(os.path.basename(key), []).append(key)
+    return by_name

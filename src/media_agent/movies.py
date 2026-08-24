@@ -10,7 +10,35 @@ from .console import confirm
 from .index import (_check_low_res_sync, _rebuild_low_res, load_movies_json,
                     save_movies_json)
 from .naming import build_clean_name, parse_movie_filename
-from .probe import classify_resolution, get_media_info, scan_video_files
+from .probe import (classify_resolution, get_media_info, group_by_basename,
+                    scan_video_files, video_path_key)
+
+
+def migrate_index_paths(movies, disk_files):
+    """Give every index entry a 'path', matching it to a real file on disk.
+
+    Indexes written before paths were recorded identify a movie by filename
+    alone. Re-probing the whole library to rebuild them would take hours over a
+    network share, so instead match each entry to disk by basename. Where the
+    basename is unique -- the overwhelming majority -- the match is certain and
+    the entry keeps all its probe data.
+
+    Returns (migrated_count, ambiguous_names). An ambiguous name is one where
+    two or more files share the basename, so which one the entry described
+    cannot be recovered. Those are reported rather than guessed at.
+    """
+    by_name = group_by_basename(disk_files)
+    migrated, ambiguous = 0, []
+    for m in movies:
+        if m.get('path'):
+            continue
+        candidates = by_name.get(m['name'], [])
+        if len(candidates) == 1:
+            m['path'] = candidates[0]
+            migrated += 1
+        elif len(candidates) > 1:
+            ambiguous.append(m['name'])
+    return migrated, sorted(set(ambiguous))
 
 
 def cmd_rescan(args):
@@ -20,11 +48,26 @@ def cmd_rescan(args):
     print(f"  {len(disk_files)} video files found on disk")
 
     data = load_movies_json()
-    index_by_name = {m['name']: m for m in data['movies']}
-    print(f"  {len(index_by_name)} entries in movies.json")
+    print(f"  {len(data['movies'])} entries in movies.json")
+
+    migrated, ambiguous = migrate_index_paths(data['movies'], disk_files)
+    if migrated:
+        print(f"  {migrated} existing entries matched to their file on disk.")
+    if ambiguous:
+        print(f"\n  {len(ambiguous)} indexed name(s) match more than one file on disk.")
+        print("  Which file each entry described cannot be recovered, so they will be")
+        print("  re-indexed per file. Review these — they are often true duplicates:")
+        for name in ambiguous:
+            for key in group_by_basename(disk_files)[name]:
+                print(f"    {key}")
+
+    # Entries that never got a path are the ambiguous ones; drop them so each
+    # real file is re-indexed under its own path rather than sharing one entry.
+    data['movies'] = [m for m in data['movies'] if m.get('path')]
+    index_by_path = {m['path']: m for m in data['movies']}
 
     on_disk    = set(disk_files)
-    in_index   = set(index_by_name)
+    in_index   = set(index_by_path)
     new_files  = sorted(on_disk - in_index)
     stale      = sorted(in_index - on_disk)
 
@@ -33,18 +76,21 @@ def cmd_rescan(args):
 
     if not new_files and not stale:
         print("\nIndex is already up to date.")
+        if migrated:
+            save_movies_json(data)
+            print("movies.json saved (file paths recorded).")
         _check_low_res_sync(data['movies'])
         return
 
-    changed = False
+    changed = bool(migrated or ambiguous)
 
     # ── Remove stale entries ──────────────────────────────────────────────────
     if stale:
         print("\nStale index entries (file no longer on disk):")
-        for name in stale:
-            print(f"  - {name}")
+        for key in stale:
+            print(f"  - {key}")
         if args.yes or confirm(f"\nRemove {len(stale)} stale entries from index?"):
-            data['movies'] = [m for m in data['movies'] if m['name'] not in set(stale)]
+            data['movies'] = [m for m in data['movies'] if m['path'] not in set(stale)]
             print(f"  Removed {len(stale)} entries.")
             changed = True
         else:
@@ -53,22 +99,20 @@ def cmd_rescan(args):
     # ── Add new files ─────────────────────────────────────────────────────────
     if new_files:
         print(f"\nNew files to index ({len(new_files)}):")
-        for name in new_files:
-            p = disk_files[name]
-            print(f"  + {name}")
+        for key in new_files:
+            print(f"  + {key}")
 
         if args.yes or confirm(f"\nProbe and add {len(new_files)} new files to index?"):
             added, failed = 0, 0
-            for name in new_files:
-                fpath = disk_files[name]
-                if isinstance(fpath, list):
-                    fpath = fpath[0]  # pick first if duplicates
-                print(f"  Probing: {name} ... ", end='', flush=True)
+            for key in new_files:
+                fpath = disk_files[key]
+                print(f"  Probing: {key} ... ", end='', flush=True)
                 info = get_media_info(fpath)
                 if 'error' in info:
                     print(f"FAILED ({info['error']})")
                     failed += 1
                 else:
+                    info['path'] = key
                     res = classify_resolution(info['width'], info['height'])
                     print(f"{info['width']}x{info['height']} {res}")
                     data['movies'].append(info)
@@ -80,7 +124,7 @@ def cmd_rescan(args):
 
     # ── Save movies.json ──────────────────────────────────────────────────────
     if changed:
-        data['movies'].sort(key=lambda m: m['name'].lower())
+        data['movies'].sort(key=lambda m: m['path'].lower())
         save_movies_json(data)
         print(f"\nmovies.json saved: {len(data['movies'])} entries total.")
 
@@ -107,14 +151,17 @@ def cmd_normalize(args):
     disk_files = scan_video_files(get_config().sections['movies'])
     proposals  = []
 
-    for fname, fpath in sorted(disk_files.items()):
+    for key, fpath in sorted(disk_files.items()):
+        fname  = os.path.basename(key)
         parsed = parse_movie_filename(fname)
         if parsed is None:
             continue
         new_name = build_clean_name(parsed)
         if new_name == fname:
             continue
-        proposals.append({'old': fname, 'new': new_name, 'path': fpath})
+        # 'path' is the absolute path to act on; 'key' identifies the file in
+        # the index. Two files can share 'old' and still be distinct entries.
+        proposals.append({'old': fname, 'new': new_name, 'path': fpath, 'key': key})
 
     if not proposals:
         print("All filenames already look clean.")
@@ -169,20 +216,23 @@ def cmd_normalize(args):
         return
 
     data = load_movies_json()
-    index_by_name = {m['name']: m for m in data['movies']}
+    index_by_path = {m.get('path'): m for m in data['movies'] if m.get('path')}
 
     renamed, failed = 0, 0
     for p in proposals:
-        old_path = p['path'] if isinstance(p['path'], str) else p['path'][0]
+        old_path = p['path']
         new_path = os.path.join(os.path.dirname(old_path), p['new'])
         if os.path.exists(new_path):
             print(f"  SKIP (exists): {p['new']}")
             continue
         try:
             shutil.move(old_path, new_path)
-            # Update index entry
-            if p['old'] in index_by_name:
-                index_by_name[p['old']]['name'] = p['new']
+            # Update the index entry for this exact file, and move its key with
+            # it -- the path is the identity, so a rename changes it.
+            entry = index_by_path.get(p['key'])
+            if entry is not None:
+                entry['name'] = p['new']
+                entry['path'] = video_path_key(new_path, get_config().sections['movies'])
             renamed += 1
             print(f"  OK: {p['new']}")
         except Exception as e:
@@ -191,7 +241,8 @@ def cmd_normalize(args):
 
     if renamed:
         # Rebuild index from updated dict
-        data['movies'] = sorted(index_by_name.values(), key=lambda m: m['name'].lower())
+        data['movies'] = sorted(data['movies'],
+                                key=lambda m: (m.get('path') or m['name']).lower())
         save_movies_json(data)
         _rebuild_low_res(data['movies'])
         print(f"\nRenamed {renamed} files. Indexes updated.")
@@ -250,8 +301,14 @@ def cmd_status(args):
     # Disk check (quick — just count, don't walk)
     print("\nDisk check...")
     disk_files = scan_video_files(get_config().sections['movies'])
-    in_index   = {m['name'] for m in movies}
-    on_disk    = set(disk_files)
+    # Compare by path where the index has one; fall back to basenames for an
+    # index that predates paths, so status still reports something sensible.
+    if movies and all(m.get('path') for m in movies):
+        in_index = {m['path'] for m in movies}
+        on_disk  = set(disk_files)
+    else:
+        in_index = {m['name'] for m in movies}
+        on_disk  = {os.path.basename(k) for k in disk_files}
     new_count   = len(on_disk - in_index)
     stale_count = len(in_index - on_disk)
     print(f"  On disk:       {len(on_disk)}")

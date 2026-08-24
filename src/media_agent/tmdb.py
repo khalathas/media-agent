@@ -12,7 +12,7 @@ from .config import TMDB_API_BASE, TMDB_TOKEN_ENV, get_config
 from .console import confirm
 from .index import load_movies_json, save_movies_json, write_json_atomic
 from .naming import _STRIP_RE, _YEAR_RE, _canonical_filename
-from .probe import scan_video_files
+from .probe import group_by_basename, scan_video_files, video_path_key
 
 
 _TMDB_ID_RE = re.compile(r'\{tmdb-(\d+)\}', re.IGNORECASE)
@@ -269,6 +269,24 @@ def cmd_tmdb_enrich(args):
         print(f"then run:  python media_agent.py tmdb-rename --dry-run")
 
 
+
+def _resolve_single_path(disk_files, by_name, filename):
+    """Map a filename to the one file on disk that bears it.
+
+    Returns (abs_path, path_key) or (None, reason). movies_tmdb.json identifies
+    films by filename, so when two folders both hold that name there is no way
+    to tell which one the entry meant. Renaming whichever came first was the old
+    behaviour; refusing and saying so is the right one.
+    """
+    keys = by_name.get(filename, [])
+    if not keys:
+        return None, "NOT FOUND on disk"
+    if len(keys) > 1:
+        where = ", ".join(sorted(os.path.dirname(k) or "(root)" for k in keys))
+        return None, f"AMBIGUOUS — {len(keys)} files share this name ({where})"
+    return disk_files[keys[0]], keys[0]
+
+
 def cmd_tmdb_canonicalize(args):
     """
     Rename movie files to canonical Plex format using TMDB title/year data:
@@ -361,27 +379,30 @@ def cmd_tmdb_canonicalize(args):
         return
 
     disk_files    = scan_video_files(get_config().sections['movies'])
+    by_name       = group_by_basename(disk_files)
     data          = load_movies_json()
+    index_by_path = {m.get('path'): m for m in data['movies'] if m.get('path')}
     index_by_name = {m['name']: m for m in data['movies']}
     tmdb_by_name  = {e['filename']: e for e in tmdb_data.get('movies', [])}
+    movies_root   = get_config().sections['movies']
 
     renamed, failed = 0, 0
     for p in proposals:
-        if p['old'] not in disk_files:
-            print(f"  NOT FOUND on disk: {p['old']}")
+        old_path, key = _resolve_single_path(disk_files, by_name, p['old'])
+        if old_path is None:
+            print(f"  {key}: {p['old']}")
             failed += 1
             continue
-        old_path = disk_files[p['old']]
-        if isinstance(old_path, list):
-            old_path = old_path[0]
         new_path = os.path.join(os.path.dirname(old_path), p['new'])
         if os.path.exists(new_path):
             print(f"  SKIP (already exists): {p['new']}")
             continue
         try:
             shutil.move(old_path, new_path)
-            if p['old'] in index_by_name:
-                index_by_name[p['old']]['name'] = p['new']
+            entry = index_by_path.get(key) or index_by_name.get(p['old'])
+            if entry is not None:
+                entry['name'] = p['new']
+                entry['path'] = video_path_key(new_path, movies_root)
             if p['old'] in tmdb_by_name:
                 tmdb_by_name[p['old']]['filename'] = p['new']
             renamed += 1
@@ -391,7 +412,7 @@ def cmd_tmdb_canonicalize(args):
             failed += 1
 
     if renamed:
-        data['movies'].sort(key=lambda m: m['name'].lower())
+        data['movies'].sort(key=lambda m: (m.get('path') or m['name']).lower())
         save_movies_json(data)
         tmdb_data['movies'] = list(tmdb_by_name.values())
         write_json_atomic(tmdb_path, tmdb_data)
@@ -473,27 +494,30 @@ def cmd_tmdb_rename(args):
         return
 
     disk_files    = scan_video_files(get_config().sections['movies'])
+    by_name       = group_by_basename(disk_files)
     data          = load_movies_json()
+    index_by_path = {m.get('path'): m for m in data['movies'] if m.get('path')}
     index_by_name = {m['name']: m for m in data['movies']}
     tmdb_by_name  = {e['filename']: e for e in tmdb_data.get('movies', [])}
+    movies_root   = get_config().sections['movies']
 
     renamed, failed = 0, 0
     for p in proposals:
-        if p['old'] not in disk_files:
-            print(f"  NOT FOUND on disk: {p['old']}")
+        old_path, key = _resolve_single_path(disk_files, by_name, p['old'])
+        if old_path is None:
+            print(f"  {key}: {p['old']}")
             failed += 1
             continue
-        old_path = disk_files[p['old']]
-        if isinstance(old_path, list):
-            old_path = old_path[0]
         new_path = os.path.join(os.path.dirname(old_path), p['new'])
         if os.path.exists(new_path):
             print(f"  SKIP (already exists): {p['new']}")
             continue
         try:
             shutil.move(old_path, new_path)
-            if p['old'] in index_by_name:
-                index_by_name[p['old']]['name'] = p['new']
+            entry = index_by_path.get(key) or index_by_name.get(p['old'])
+            if entry is not None:
+                entry['name'] = p['new']
+                entry['path'] = video_path_key(new_path, movies_root)
             if p['old'] in tmdb_by_name:
                 tmdb_by_name[p['old']]['filename'] = p['new']
             renamed += 1
@@ -503,7 +527,7 @@ def cmd_tmdb_rename(args):
             failed += 1
 
     if renamed:
-        data['movies'].sort(key=lambda m: m['name'].lower())
+        data['movies'].sort(key=lambda m: (m.get('path') or m['name']).lower())
         save_movies_json(data)
         tmdb_data['movies'] = list(tmdb_by_name.values())
         write_json_atomic(tmdb_path, tmdb_data)
