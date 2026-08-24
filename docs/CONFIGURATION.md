@@ -103,7 +103,7 @@ Where the `--dry-run` preview files are written (`normalize_preview.txt`, `tmdb_
 "reports_dir": null
 ```
 
-`null` means the same place as `indexes_dir`.
+`null` means alongside your library. Note this follows `library_root`, **not** `indexes_dir` — so if you move your indexes elsewhere and want the previews to follow them, set this as well.
 
 These files are your record of what changed. Keep them somewhere you'll find them.
 
@@ -119,7 +119,7 @@ These files are your record of what changed. Keep them somewhere you'll find the
 
 1. `ffprobe` on your system PATH
 2. this `ffprobe_path` value
-3. `vendor/ffmpeg/bin/` — where `scripts/install_ffmpeg.*` puts it
+3. `vendor/ffmpeg/bin/` relative to a source checkout or your current folder — where `scripts/install_ffmpeg.*` puts it. This only applies if you have the project source; a `pip install` has no such folder.
 
 Only set this if `media-agent doctor` reports it can't find ffprobe.
 

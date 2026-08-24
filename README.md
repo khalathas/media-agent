@@ -35,7 +35,7 @@ Start with `media-agent status`. It only reads, and it changes nothing.
 
 - It does **not** talk to your Plex server. You don't need Plex running, and it never needs your Plex password or token.
 - It does **not** download, stream, or transcode anything.
-- It does **not** delete your media. The only files it ever deletes are junk like `Thumbs.db` and `desktop.ini`, during `organize-music`.
+- It does **not** delete your media. `organize-music` does delete files it treats as junk — `Thumbs.db`, `desktop.ini`, stray playlists, **and cover-art files such as `folder.jpg` and `AlbumArt*.jpg`**. That list is configurable. Your audio and video files are never deleted.
 
 ---
 
@@ -49,17 +49,24 @@ Start with `media-agent status`. It only reads, and it changes nothing.
 python --version
 ```
 
-**ffmpeg**, which provides a tool called `ffprobe` used to read video properties. Only needed for the commands that scan video. If you don't have it, an installer script is included:
+**ffmpeg**, which provides a tool called `ffprobe` used to read video properties. Only needed for the commands that scan video.
 
 ```powershell
-.\scripts\install_ffmpeg.ps1
+winget install Gyan.FFmpeg
 ```
 
 ```bash
-bash scripts/install_ffmpeg.sh
+brew install ffmpeg          # macOS
+sudo apt install ffmpeg      # Debian / Ubuntu
 ```
 
-It checks whether you already have ffmpeg and does nothing if so.
+Then **close and reopen your terminal**, and check it worked:
+
+```bash
+ffprobe -version
+```
+
+If you'd rather not use a package manager, download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have a copy of this project's source, `scripts/install_ffmpeg.ps1` (Windows) or `scripts/install_ffmpeg.sh` will fetch it into `vendor/ffmpeg/` for you — note those scripts download a build from the internet without verifying a checksum, so prefer your package manager where you can.
 
 > **Opening a terminal:** on Windows press <kbd>Start</kbd>, type `powershell`, press <kbd>Enter</kbd>. On macOS press <kbd>Cmd</kbd>+<kbd>Space</kbd>, type `terminal`, press <kbd>Enter</kbd>.
 
@@ -203,7 +210,7 @@ All of these accept `--dry-run`, `--apply`, and `--yes`.
 |---|---|
 | `normalize` | Cleans movie filenames into `Title (Year) [Quality].ext`. |
 | `normalize-tv` | Restructures TV into `Show (Year)/Season NN/` and moves loose episodes into the right season, bringing matching `.srt` subtitles along. **It does not rename the episode files themselves** — only the folders they live in. |
-| `organize-music` | Moves tracks into `Artist/Album (Year)/01 - Title.ext`, with `Disc N` subfolders for multi-disc sets. Untagged files are set aside in `_NeedsTagging` rather than guessed at. Deletes junk files (`Thumbs.db`, `desktop.ini`, stray playlists) — the only deletion this tool performs. |
+| `organize-music` | Moves tracks into `Artist/Album (Year)/01 - Title.ext`, with `Disc N` subfolders for multi-disc sets. Untagged files are set aside in `_NeedsTagging` rather than guessed at. Deletes junk files — including cover art such as `folder.jpg`; see [what it deletes](docs/COMMANDS.md#organize-music). The only deletion this tool performs. |
 | `tmdb-canonicalize` | Renames films to TMDB's official title and year: `Highlander (1986) {tmdb-8009}.mkv`. |
 | `tmdb-rename` | Adds just the `{tmdb-12345}` tag, leaving your title alone. Confident matches only, unless you add `--include-ambiguous`. |
 
@@ -260,7 +267,7 @@ Run `media-agent doctor` to confirm it's recognised.
 
 **Do I need Plex running?** No. media-agent never contacts Plex. It only rearranges files; Plex picks up the tidier layout next time it scans.
 
-**Will it delete my media?** No. It renames and moves. The only deletions are junk files (`Thumbs.db`, `desktop.ini`, stray `.m3u`/`.nfo`) during `organize-music`.
+**Will it delete my media?** Your audio and video files are never deleted — only renamed and moved. `organize-music` does delete files it treats as junk: `Thumbs.db`, `desktop.ini`, `.nfo`, stray `.m3u` playlists, and **cover-art files** (`folder.jpg`, `AlbumArt*.jpg`). If you rely on local artwork files rather than art embedded in the tracks, change `music.junk_patterns` in your config first. The complete delete list is written to `organize_music_preview.txt` by `--dry-run`.
 
 **Can I undo it?** Not automatically. This is why previews matter — **keep the preview files**, because they record every rename and are your map back.
 

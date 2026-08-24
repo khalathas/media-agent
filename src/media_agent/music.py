@@ -231,6 +231,62 @@ def cmd_scan_music(args):
 
 # ── Command: organize-music ────────────────────────────────────────────────────
 
+def _write_music_preview(music_root_norm, well_moves, tagging_moves,
+                         collision_moves, junk_dels, conflicts):
+    """Write the complete plan to a file.
+
+    The console output is deliberately truncated to samples, because a large
+    library produces thousands of lines. But organize-music is the only command
+    that deletes anything, and a user cannot consent to a delete list they can
+    only see the first ten entries of. This writes the whole thing.
+    """
+    path = str(get_config().reports_dir / 'organize_music_preview.txt')
+
+    def rel(p):
+        return p.replace(music_root_norm + '/', '')
+
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write("organize-music plan\n")
+            f.write("=" * 70 + "\n\n")
+            f.write("Nothing below has happened yet. Run with --apply to execute.\n\n")
+
+            if junk_dels:
+                f.write("=" * 70 + "\n")
+                f.write(f"FILES THAT WILL BE DELETED ({len(junk_dels)})\n")
+                f.write("These are matched as junk by the 'music.junk_names' and\n")
+                f.write("'music.junk_patterns' settings in your config. This is the\n")
+                f.write("only place media-agent deletes anything. Note that cover art\n")
+                f.write("(folder.jpg, AlbumArt*.jpg) is included by default.\n")
+                f.write("=" * 70 + "\n\n")
+                for fp in junk_dels:
+                    f.write(f"  DELETE  {rel(fp)}\n")
+                f.write("\n")
+
+            for title, items in (("MOVES — well-tagged files", well_moves),
+                                 ("MOVES — held for tagging", tagging_moves),
+                                 ("MOVES — filename collisions", collision_moves)):
+                if not items:
+                    continue
+                f.write("=" * 70 + "\n")
+                f.write(f"{title} ({len(items)})\n")
+                f.write("=" * 70 + "\n\n")
+                for src, dst in items:
+                    f.write(f"  FROM: {rel(src)}\n")
+                    f.write(f"    TO: {rel(dst)}\n\n")
+
+            if conflicts:
+                f.write("=" * 70 + "\n")
+                f.write(f"SKIPPED — target already exists ({len(conflicts)})\n")
+                f.write("=" * 70 + "\n\n")
+                for src, dst in conflicts:
+                    f.write(f"  {rel(src)}\n    would collide with: {rel(dst)}\n\n")
+
+        print(f"\nFull plan saved to: {path}")
+    except Exception as exc:
+        print(f"\nWARNING: could not write preview file: {exc}")
+
+
 def cmd_organize_music(args):
     """
     Organize the Music folder into Plex structure.
@@ -410,6 +466,8 @@ def cmd_organize_music(args):
         if len(junk_dels) > 10:
             print(f"  ... and {len(junk_dels) - 10} more")
 
+        _write_music_preview(music_root_norm, well_moves, tagging_moves,
+                             collision_moves, junk_dels, conflicts)
         print(f"\nRun with --apply to execute.")
         return
 

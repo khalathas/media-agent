@@ -127,17 +127,20 @@ Paste your file into [jsonlint.com](https://jsonlint.com/) if you can't spot it.
 
 Commands that inspect video (`rescan`, `scan-tvshows`) need it. Everything else works without it.
 
-Install it:
+Install it with your package manager:
 
 ```powershell
-.\scripts\install_ffmpeg.ps1
+winget install Gyan.FFmpeg
 ```
 
 ```bash
-bash scripts/install_ffmpeg.sh
+brew install ffmpeg          # macOS
+sudo apt install ffmpeg      # Debian / Ubuntu
 ```
 
-Or install ffmpeg system-wide — [ffmpeg.org/download](https://ffmpeg.org/download.html), `brew install ffmpeg`, `sudo apt install ffmpeg` — then reopen your terminal.
+Then **close and reopen your terminal** — a running terminal won't see a newly installed program. Check with `ffprobe -version`.
+
+Or download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have the project source, `scripts/install_ffmpeg.ps1` / `scripts/install_ffmpeg.sh` will fetch a copy into `vendor/ffmpeg/`, though they download without verifying a checksum, so a package manager is the safer route.
 
 If it's installed somewhere unusual, name it in your config:
 
@@ -339,7 +342,7 @@ Add a correction to your overrides file as above, run `tmdb-fix`, then re-run `t
 
 ### It renamed something wrongly
 
-**Check the preview file.** Every 🔴 command writes one — `normalize_preview.txt`, `tmdb_rename_preview.txt`, `tmdb_canonicalize_preview.txt` — in your `reports_dir`. It lists every rename, old name to new name, and is your map back.
+**Check the preview file.** Every 🔴 command writes one into your `reports_dir`: `normalize_preview.txt`, `normalize_tv_preview.txt`, `organize_music_preview.txt`, `tmdb_rename_preview.txt`, and `tmdb_canonicalize_preview.txt`. Each lists every intended change, old name to new name, and is your map back.
 
 There is no automatic undo. This is why previews and backups matter.
 

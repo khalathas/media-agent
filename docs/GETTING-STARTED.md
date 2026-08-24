@@ -85,19 +85,28 @@ ffprobe -version
 
 If that prints version information, you're done — skip ahead.
 
-If not, media-agent ships an installer:
+If not, install it with your package manager:
 
 ```powershell
 # Windows
-.\scripts\install_ffmpeg.ps1
+winget install Gyan.FFmpeg
 ```
 
 ```bash
-# macOS / Linux
-bash scripts/install_ffmpeg.sh
+# macOS
+brew install ffmpeg
+
+# Debian / Ubuntu
+sudo apt install ffmpeg
 ```
 
-> These scripts live in the project's source folder. If you installed with `pip` and don't have that folder, install ffmpeg the normal way instead: [ffmpeg.org/download](https://ffmpeg.org/download.html), or `brew install ffmpeg` on macOS, or `sudo apt install ffmpeg` on Ubuntu.
+Then **close your terminal and open a new one** — a terminal that's already running won't notice a newly installed program. Check it worked:
+
+```bash
+ffprobe -version
+```
+
+> No package manager? Download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add the folder containing `ffprobe` to your PATH — the same PATH idea as in [Troubleshooting](TROUBLESHOOTING.md#media-agent-is-not-recognized). Failing that, tell media-agent exactly where it is by setting `ffprobe_path` in your config.
 
 ---
 

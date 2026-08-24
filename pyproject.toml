@@ -46,3 +46,5 @@ packages = ["src/media_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# So a bare `pytest` works in a fresh clone, without an editable install.
+pythonpath = ["src", "tests"]

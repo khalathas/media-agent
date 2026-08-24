@@ -785,6 +785,52 @@ def _build_normalize_tv_plan(tv_root, data):
     }
 
 
+def _write_normalize_tv_preview(plan):
+    """Write the complete plan to a file.
+
+    The docs tell people to read the preview before applying, and to keep it as
+    their record of what moved -- there is no undo. That only works if every
+    command in the destructive tier actually writes one.
+    """
+    path = str(get_config().reports_dir / 'normalize_tv_preview.txt')
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write("normalize-tv plan\n")
+            f.write("=" * 70 + "\n\n")
+            f.write("Nothing below has happened yet. Run with --apply to execute.\n")
+            f.write("Episode files are never renamed -- only the folders around\n")
+            f.write("them, plus loose episodes moved into the right season.\n\n")
+
+            for title, items in (("SHOW FOLDER RENAMES", plan['show_renames']),
+                                 ("SEASON FOLDER RENAMES", plan['season_renames'])):
+                if not items:
+                    continue
+                f.write("=" * 70 + "\n")
+                f.write(f"{title} ({len(items)})\n")
+                f.write("=" * 70 + "\n\n")
+                for entry in items:
+                    f.write(f"  FROM: {entry[0]}\n    TO: {entry[1]}\n\n")
+
+            if plan['file_moves']:
+                f.write("=" * 70 + "\n")
+                f.write(f"EPISODE MOVES ({len(plan['file_moves'])})\n")
+                f.write("=" * 70 + "\n\n")
+                for src, dst, _show in plan['file_moves']:
+                    f.write(f"  FROM: {src}\n    TO: {dst}\n\n")
+
+            if plan['conflicts']:
+                f.write("=" * 70 + "\n")
+                f.write(f"SKIPPED — needs your attention ({len(plan['conflicts'])})\n")
+                f.write("Nothing is overwritten. These are left exactly as they are.\n")
+                f.write("=" * 70 + "\n\n")
+                for reason, pth in plan['conflicts']:
+                    f.write(f"  {reason}\n    {pth}\n\n")
+
+        print(f"\nFull plan saved to: {path}")
+    except Exception as exc:
+        print(f"\nWARNING: could not write preview file: {exc}")
+
+
 def _print_normalize_tv_plan(plan):
     """Print the normalization plan in the specified format."""
     show_renames   = plan['show_renames']
@@ -844,6 +890,7 @@ def cmd_normalize_tv(args):
     plan = _build_normalize_tv_plan(tv_root, data)
 
     _print_normalize_tv_plan(plan)
+    _write_normalize_tv_preview(plan)
 
     total_ops = (len(plan['show_renames']) + len(plan['season_renames'])
                  + len(plan['file_moves']))

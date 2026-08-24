@@ -126,3 +126,29 @@ def test_apply_actually_does_something(command, library):
         "--apply made no change; either the command is broken or the fixture "
         "has no pending work, which would make the other tests meaningless"
     )
+
+
+# The docs make a specific promise: every command in this tier writes a preview
+# file listing every intended change, and tells you to read it before applying.
+# With no undo, that file is the user's only record of what happened.
+PREVIEW_FILES = [
+    pytest.param(cmd_normalize,         "normalize_preview.txt",         id="normalize"),
+    pytest.param(cmd_normalize_tv,      "normalize_tv_preview.txt",      id="normalize-tv"),
+    pytest.param(cmd_organize_music,    "organize_music_preview.txt",    id="organize-music"),
+    pytest.param(cmd_tmdb_rename,       "tmdb_rename_preview.txt",       id="tmdb-rename"),
+    pytest.param(cmd_tmdb_canonicalize, "tmdb_canonicalize_preview.txt", id="tmdb-canonicalize"),
+]
+
+
+@pytest.mark.parametrize("command,filename", PREVIEW_FILES)
+def test_dry_run_writes_a_preview_file(command, filename, library, no_input):
+    try:
+        command(Args(dry_run=True))
+    except SystemExit:
+        pass
+    preview = library["root"] / filename
+    assert preview.exists(), (
+        f"--dry-run wrote no {filename}; the docs promise a preview file for "
+        "every command in this tier"
+    )
+    assert preview.read_text(encoding='utf-8').strip(), f"{filename} is empty"

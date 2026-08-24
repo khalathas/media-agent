@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # Installs ffmpeg/ffprobe for media-agent.
 #
+# PREFER YOUR PACKAGE MANAGER INSTEAD:
+#   macOS         brew install ffmpeg
+#   Debian/Ubuntu sudo apt install ffmpeg
+#   Fedora        sudo dnf install ffmpeg
+#
+# This script is a fallback for systems without one. Be aware that its Linux
+# fallback path DOWNLOADS A BINARY OVER THE NETWORK AND RUNS IT, without
+# pinning a version or verifying a checksum or signature. That means you are
+# trusting the upstream host and your network path at the moment you run it.
+# A package manager verifies signatures for you, which is why it is preferred.
+#
 # Checks if ffprobe is already on PATH first. If so, no action is needed.
-# Otherwise tries to install via the system package manager, then falls back
-# to a static build for Linux.
+# Otherwise tries the system package manager, then falls back to a static
+# build for Linux.
 #
 # Does NOT modify media_agent_config.json. Runtime discovery handles
-# vendor/ffmpeg/ automatically (PATH → config.ffprobe_path → vendor/ffmpeg/).
+# vendor/ffmpeg/ automatically (PATH -> config.ffprobe_path -> vendor/ffmpeg/).
 
 set -euo pipefail
 

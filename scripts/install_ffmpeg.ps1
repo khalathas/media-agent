@@ -4,10 +4,15 @@
     Installs ffmpeg/ffprobe into vendor/ffmpeg/ for media-agent.
 
 .DESCRIPTION
+    PREFER YOUR PACKAGE MANAGER INSTEAD:  winget install Gyan.FFmpeg
+    That verifies the package signature for you. This script does not.
+
     Checks if ffprobe is already on PATH first. If so, no action is needed —
-    media-agent will detect it automatically. Otherwise downloads a static
-    ffmpeg build from gyan.dev and extracts it to vendor/ffmpeg/ relative
-    to the repo root.
+    media-agent will detect it automatically. Otherwise it DOWNLOADS A BINARY
+    OVER THE NETWORK AND RUNS IT: a static ffmpeg build from gyan.dev, with no
+    pinned version and no checksum or signature verification. You are trusting
+    the upstream host and your network path at the moment you run this.
+    It extracts to vendor/ffmpeg/ relative to the repo root.
 
     Does NOT modify media_agent_config.json. Runtime discovery handles
     vendor/ffmpeg/ automatically (PATH → config.ffprobe_path → vendor/ffmpeg/).

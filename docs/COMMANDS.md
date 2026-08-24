@@ -78,7 +78,7 @@ Creates your config file by asking you where things are.
 media-agent init
 ```
 
-Writes `media_agent_config.json`. Safe to run again — it won't silently overwrite an existing config.
+Writes `config.json` into your user config folder — `~/.config/media-agent/config.json`, which on Windows means the `.config\media-agent` folder inside your user directory. It prints the exact path when it finishes. Safe to run again — it won't silently overwrite an existing config.
 
 This is the only command that works without a config already existing.
 
@@ -107,7 +107,7 @@ For each new file it runs ffprobe to record resolution, codecs, bitrate, and siz
 
 **The first run is slow** — it opens every video file. Over a network drive, a large library can take a long while. Later runs only probe files it hasn't seen.
 
-**If ffprobe fails on some files** they're listed in `probe_failures.txt`. Usually those files are genuinely corrupt, which is useful to know.
+**If ffprobe fails on some files** they're reported as `FAILED` in the output. (`scan-tvshows` writes its failures to `probe_failures.txt`; `rescan` prints them inline.) Usually those files are genuinely corrupt, which is useful to know.
 
 ---
 
