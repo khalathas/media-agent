@@ -47,10 +47,39 @@ You need version **3.10 or newer**.
 
 ---
 
-## Step 3 — Install media-agent
+## Step 3 — Check you have Git
+
+The install command in the next step (`pip install git+...`) uses Git behind the scenes to fetch the source, even though you never type a `git` command yourself.
 
 ```bash
-pip install git+https://github.com/khalathas/media-agent
+git --version
+```
+
+**If you see a version number** — you're set, skip to Step 4.
+
+**If you see an error**, install it:
+
+```powershell
+# Windows
+winget install Git.Git
+```
+
+```bash
+# macOS
+brew install git
+
+# Debian / Ubuntu
+sudo apt install git
+```
+
+Then **close your terminal and open a new one**, and check again with `git --version`.
+
+---
+
+## Step 4 — Install media-agent
+
+```bash
+python -m pip install git+https://github.com/khalathas/media-agent
 ```
 
 This downloads and installs the tool. It takes a few seconds. Some text scrolls past; as long as the last line says something like `Successfully installed media-agent`, you're fine.
@@ -73,7 +102,7 @@ If you use that form, just write `python -m media_agent` everywhere this guide s
 
 ---
 
-## Step 4 — Install ffmpeg
+## Step 5 — Install ffmpeg
 
 media-agent uses a program called `ffprobe` (part of ffmpeg) to look inside video files and find out their resolution and codec. Without it, the video scanning commands won't run.
 
@@ -110,7 +139,7 @@ ffprobe -version
 
 ---
 
-## Step 5 — Tell media-agent where your library is
+## Step 6 — Tell media-agent where your library is
 
 ```bash
 media-agent init
@@ -133,7 +162,7 @@ then your library root is `D:\Plex Media Library`.
 
 ---
 
-## Step 6 — Check everything works
+## Step 7 — Check everything works
 
 ```bash
 media-agent doctor
@@ -161,7 +190,7 @@ All checks passed.
 
 ---
 
-## Step 7 — Look at your library
+## Step 8 — Look at your library
 
 ```bash
 media-agent status
@@ -185,7 +214,7 @@ If it says `0 entries`, that's expected the first time — you haven't built the
 
 ---
 
-## Step 8 — Build your movie index
+## Step 9 — Build your movie index
 
 ```bash
 media-agent rescan
@@ -201,7 +230,7 @@ It will ask you to confirm before adding new files or removing entries for files
 
 ---
 
-## Step 9 — Your first real change: cleaning up filenames
+## Step 10 — Your first real change: cleaning up filenames
 
 This is the first step that modifies actual files, so we do it carefully, in two stages.
 
@@ -245,7 +274,7 @@ It shows the plan once more and asks you to confirm. Type `yes`.
 
 ---
 
-## Step 10 — TV shows
+## Step 11 — TV shows
 
 Same two-stage pattern. First build the index:
 
@@ -280,7 +309,7 @@ media-agent normalize-tv --apply
 
 ---
 
-## Step 11 — Music
+## Step 12 — Music
 
 ```bash
 media-agent scan-music
@@ -310,7 +339,7 @@ media-agent organize-music --apply
 
 ---
 
-## Step 12 (optional) — Perfect movie matching with TMDB
+## Step 13 (optional) — Perfect movie matching with TMDB
 
 If Plex still mismatches some films, this fixes it properly by tagging each file with its official database ID.
 

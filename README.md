@@ -68,6 +68,25 @@ ffprobe -version
 
 If you'd rather not use a package manager, download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have a copy of this project's source, `scripts/install_ffmpeg.ps1` (Windows) or `scripts/install_ffmpeg.sh` will fetch it into `vendor/ffmpeg/` for you — they download a pinned, checksum-verified build (SHA-256 on Windows, MD5 on Linux — the only digest the upstream Linux builds publish) and check for unsafe archive contents before extracting. A package manager is still the stronger guarantee, since it also verifies a cryptographic signature, which these scripts can't.
 
+**Git.** The install command below (`pip install git+...`) needs it — pip uses it behind the scenes to fetch the source, even though you never type a `git` command yourself. Check whether you already have it:
+
+```bash
+git --version
+```
+
+If that fails:
+
+```powershell
+winget install Git.Git
+```
+
+```bash
+brew install git              # macOS
+sudo apt install git          # Debian / Ubuntu
+```
+
+Then **close and reopen your terminal** and check again with `git --version`.
+
 > **Opening a terminal:** on Windows press <kbd>Start</kbd>, type `powershell`, press <kbd>Enter</kbd>. On macOS press <kbd>Cmd</kbd>+<kbd>Space</kbd>, type `terminal`, press <kbd>Enter</kbd>.
 
 ---
@@ -75,7 +94,7 @@ If you'd rather not use a package manager, download it from [ffmpeg.org/download
 ## Install
 
 ```bash
-pip install git+https://github.com/khalathas/media-agent
+python -m pip install git+https://github.com/khalathas/media-agent
 ```
 
 That gives you a `media-agent` command. Check it worked:
