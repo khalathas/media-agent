@@ -92,6 +92,53 @@ class TestCollisions:
         assert len(list(music.rglob("*.mp3"))) == 3
 
 
+class TestLooseRootFiles:
+    """P3-2: an audio file sitting directly in the Music root, not inside
+    any artist folder, is invisible to the artist-directory walk (it only
+    ever recurses into subdirectories). It used to vanish from the run
+    with zero mention -- not moved, not reported, not counted anywhere.
+    """
+
+    def test_loose_root_file_is_reported_not_silently_dropped(self, tmp_path, library,
+                                                               capsys):
+        music = library / "Music"
+        make_tagged_mp3(music / "loose.mp3", "Pink Floyd",
+                        "The Dark Side of the Moon", "Breathe", 2, 1973)
+
+        config_mod.set_config(Config.load(write_config(tmp_path, library)))
+        cmd_organize_music(Args(dry_run=True))
+
+        out = capsys.readouterr().out
+        assert "loose.mp3" in out, (
+            "a loose audio file in the Music root was never mentioned in the "
+            "plan output at all"
+        )
+
+    def test_loose_root_file_is_untouched_by_apply(self, tmp_path, library):
+        """Not processed automatically -- there's no artist folder to base a
+        destination on, and this tool doesn't guess. It must still be there,
+        unmoved, after --apply."""
+        music = library / "Music"
+        make_tagged_mp3(music / "loose.mp3", "Pink Floyd",
+                        "The Dark Side of the Moon", "Breathe", 2, 1973)
+
+        config_mod.set_config(Config.load(write_config(tmp_path, library)))
+        cmd_organize_music(Args(apply=True))
+
+        assert (music / "loose.mp3").exists()
+
+    def test_loose_root_file_listed_in_preview_file(self, tmp_path, library):
+        music = library / "Music"
+        make_tagged_mp3(music / "loose.mp3", "Pink Floyd",
+                        "The Dark Side of the Moon", "Breathe", 2, 1973)
+
+        config_mod.set_config(Config.load(write_config(tmp_path, library)))
+        cmd_organize_music(Args(dry_run=True))
+
+        preview = (library / "organize_music_preview.txt").read_text(encoding='utf-8')
+        assert "loose.mp3" in preview
+
+
 class TestContainment:
     @pytest.mark.parametrize("escape", [
         "../../Escaped",

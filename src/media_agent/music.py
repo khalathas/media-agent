@@ -232,7 +232,7 @@ def cmd_scan_music(args):
 # ── Command: organize-music ────────────────────────────────────────────────────
 
 def _write_music_preview(music_root_norm, well_moves, tagging_moves,
-                         collision_moves, junk_dels, conflicts):
+                         collision_moves, junk_dels, conflicts, loose_root_files=()):
     """Write the complete plan to a file.
 
     The console output is deliberately truncated to samples, because a large
@@ -282,6 +282,18 @@ def _write_music_preview(music_root_norm, well_moves, tagging_moves,
                 for src, dst in conflicts:
                     f.write(f"  {rel(src)}\n    would collide with: {rel(dst)}\n\n")
 
+            if loose_root_files:
+                f.write("=" * 70 + "\n")
+                f.write(f"NOT ORGANIZED — loose in the Music root ({len(loose_root_files)})\n")
+                f.write("These sit directly in the Music folder, not inside an artist\n")
+                f.write("folder, so organize-music has no artist folder to base a\n")
+                f.write("destination on and leaves them alone. Move each into its\n")
+                f.write("artist's folder yourself, then re-run.\n")
+                f.write("=" * 70 + "\n\n")
+                for fp in loose_root_files:
+                    f.write(f"  {rel(fp)}\n")
+                f.write("\n")
+
         print(f"\nFull plan saved to: {path}")
     except Exception as exc:
         print(f"\nWARNING: could not write preview file: {exc}")
@@ -322,6 +334,18 @@ def cmd_organize_music(args):
     conflicts  = []   # (src, dst) where dst already exists
 
     music_root_norm = str(music_root).replace('\\', '/')
+
+    # Files sitting directly in the music root, not inside any artist
+    # folder, are invisible to the walk below -- it only ever recurses into
+    # subdirectories, so a loose file here previously vanished from the run
+    # with zero mention. Reported rather than moved: there's no artist
+    # folder to base a destination on, and this tool never guesses.
+    loose_root_files = sorted(
+        os.path.join(music_root, f).replace('\\', '/')
+        for f in os.listdir(music_root)
+        if not os.path.isdir(os.path.join(music_root, f))
+        and os.path.splitext(f)[1].lower() in get_config().music_exts
+    )
 
     for artist_dir in sorted(os.listdir(music_root)):
         if artist_dir.startswith('_') or artist_dir.startswith('.'):
@@ -456,6 +480,8 @@ def cmd_organize_music(args):
         print(f"  Collisions → _Collisions/:            {collision_groups} groups ({len(collision_moves)} files)")
     print(f"  Junk files to delete:                  {len(junk_dels)}")
     print(f"  Conflicts (dst exists, skipped):        {len(conflicts)}")
+    if loose_root_files:
+        print(f"  Loose files in Music root (not organized): {len(loose_root_files)}")
 
     if conflicts:
         print(f"\nConflicts (will be skipped):")
@@ -463,6 +489,16 @@ def cmd_organize_music(args):
             print(f"  {os.path.basename(src)} → {dst}")
         if len(conflicts) > 10:
             print(f"  ... and {len(conflicts) - 10} more")
+
+    if loose_root_files:
+        print(f"\nWARNING: {len(loose_root_files)} audio file(s) sit directly in the Music")
+        print("folder, not inside an artist folder. organize-music does not know whose")
+        print("artist folder they belong in, so it leaves them alone -- move each into")
+        print("its artist's folder yourself, then re-run.")
+        for fp in loose_root_files[:10]:
+            print(f"  {os.path.basename(fp)}")
+        if len(loose_root_files) > 10:
+            print(f"  ... and {len(loose_root_files) - 10} more")
 
     if preview_only:
         if well_moves:
@@ -491,7 +527,8 @@ def cmd_organize_music(args):
             print(f"  ... and {len(junk_dels) - 10} more")
 
         _write_music_preview(music_root_norm, well_moves, tagging_moves,
-                             collision_moves, junk_dels, conflicts)
+                             collision_moves, junk_dels, conflicts,
+                             loose_root_files=loose_root_files)
         print(f"\nRun with --apply to execute.")
         return
 
