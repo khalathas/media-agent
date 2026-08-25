@@ -66,7 +66,7 @@ Then **close and reopen your terminal**, and check it worked:
 ffprobe -version
 ```
 
-If you'd rather not use a package manager, download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have a copy of this project's source, `scripts/install_ffmpeg.ps1` (Windows) or `scripts/install_ffmpeg.sh` will fetch it into `vendor/ffmpeg/` for you — note those scripts download a build from the internet without verifying a checksum, so prefer your package manager where you can.
+If you'd rather not use a package manager, download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have a copy of this project's source, `scripts/install_ffmpeg.ps1` (Windows) or `scripts/install_ffmpeg.sh` will fetch it into `vendor/ffmpeg/` for you — they download a pinned, checksum-verified build (SHA-256 on Windows, MD5 on Linux — the only digest the upstream Linux builds publish) and check for unsafe archive contents before extracting. A package manager is still the stronger guarantee, since it also verifies a cryptographic signature, which these scripts can't.
 
 > **Opening a terminal:** on Windows press <kbd>Start</kbd>, type `powershell`, press <kbd>Enter</kbd>. On macOS press <kbd>Cmd</kbd>+<kbd>Space</kbd>, type `terminal`, press <kbd>Enter</kbd>.
 

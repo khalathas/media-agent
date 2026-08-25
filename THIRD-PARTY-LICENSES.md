@@ -13,4 +13,13 @@ This file is a disclosure of what's installed, not a legal opinion on how the li
 
 ## FFmpeg
 
-media-agent does not bundle FFmpeg or ffprobe. It looks for them on your system, and `scripts/install_ffmpeg.*` can optionally fetch a build for you — see those scripts' own headers for the pinned version, source, and license of the specific build they download.
+media-agent does not bundle, vendor, or redistribute FFmpeg or ffprobe — this repository and its installable package contain no FFmpeg binary. media-agent looks for `ffprobe` already on your system, and `scripts/install_ffmpeg.*` can optionally fetch a build directly onto **your own machine** at your request, from the same official sources you'd reach via a package manager:
+
+| Platform | Source | Build | License |
+|---|---|---|---|
+| Windows | [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) | `essentials_build`, pinned version | **GPLv3** |
+| Linux | [johnvansickle.com](https://johnvansickle.com/ffmpeg/) | static builds, pinned version | **GPLv3** |
+
+Both confirmed directly from each site's own licensing statement, not assumed. The installer script headers (`scripts/install_ffmpeg.ps1`, `scripts/install_ffmpeg.sh`) document the pinned version, source URL, and checksum-verification method — not the license; that's here instead.
+
+Because the binary is fetched onto your machine at your own request rather than shipped inside media-agent's package, this is the same posture as installing ffmpeg via `winget`/`brew`/`apt` yourself — media-agent is not the one distributing it. If you build something that *does* bundle or redistribute one of these binaries (rather than fetching it per-install), GPLv3's terms apply to that distribution and are a different situation than running the installer script locally.
