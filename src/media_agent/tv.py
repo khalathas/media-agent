@@ -636,12 +636,16 @@ def _build_normalize_tv_plan(tv_root, data):
     file_moves     = []   # (src_path, dst_path, show_display_name) | None
     conflicts      = []   # (reason, path)
     claimed_dsts   = {}   # normalised destination -> (source, index in file_moves)
-    poisoned_dsts  = set()  # destinations with 2+ claimants -- never claimable again
-    # video dst_key -> [subtitle dst_key, ...] claimed on its behalf. When a
-    # video's claim is retracted, anything claimed here must be retracted too
-    # -- otherwise a subtitle can move alone, orphaned from the video it goes
-    # with, while the conflict message says "moving neither".
-    video_children = {}
+    poisoned_dsts  = set()  # destinations with 2+ DIFFERENT claimants -- never claimable again
+    # A subtitle shared by two video variants of one episode (S01E01.mkv and
+    # S01E01.mp4, say) is legitimately claimed twice -- once per video that
+    # references it, since the subtitle-matching loop runs per video. That is
+    # not a conflict: it is the same physical file wanting the same
+    # destination both times. These two maps track that a claim can have more
+    # than one parent video, so retracting one parent doesn't strand the
+    # subtitle while another parent is still moving.
+    video_children = {}   # video dst_key -> {child dst_key, ...} claimed for it
+    child_parents  = {}   # child dst_key -> {parent video dst_key, ...} still live
 
     def _claim_destination(dst_key, src_path, dst_path, show_name, root_for_display,
                            parent_video_key=None):
@@ -653,21 +657,32 @@ def _build_normalize_tv_plan(tv_root, data):
         second move would destroy the first file.
 
         The first claimant to arrive is provisionally queued in file_moves. If
-        a second claimant shows up, BOTH the earlier queued entry and this one
-        become conflicts instead -- the earlier one is retracted from
-        file_moves (set to None; filtered out before the plan is returned) and
-        the destination is marked poisoned so a third claimant does not slip
+        a second, genuinely DIFFERENT file shows up wanting the same
+        destination, BOTH the earlier queued entry and this one become
+        conflicts instead -- the earlier one is retracted from file_moves (set
+        to None; filtered out before the plan is returned) and the
+        destination is marked poisoned so a third claimant does not slip
         through and silently reclaim it once the dict entry is gone.
 
+        A second claim for the SAME source file (by normalised path) is not a
+        conflict at all -- it is the same subtitle being matched against a
+        second video variant of the same episode -- and succeeds as a no-op.
+
         parent_video_key, when given, records this claim (typically a
-        subtitle) as belonging to a video's claim, so that if the video is
-        later retracted this claim is retracted with it. Returns True if the
-        claim succeeded, False if it became a conflict.
+        subtitle) as belonging to a video's claim. If that video is later
+        retracted, this claim is retracted too -- but only once every parent
+        that claimed it has been retracted; a subtitle shared by two videos
+        stays queued as long as at least one of them is still moving. Returns
+        True if the claim succeeded (fresh or idempotent), False if it became
+        a conflict.
         """
         def _where(pth):
             rel = os.path.relpath(pth, root_for_display)
             parent = os.path.dirname(rel)
             return parent.replace(os.sep, '/') if parent else '(show root)'
+
+        def _same_file(a, b):
+            return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
         def _retract(key):
             """Pull an already-queued claim back out and poison its key."""
@@ -684,6 +699,16 @@ def _build_normalize_tv_plan(tv_root, data):
 
         if dst_key in claimed_dsts:
             prev_src, prev_idx = claimed_dsts[dst_key]
+
+            if _same_file(prev_src, src_path):
+                # The identical file, claimed again on behalf of another
+                # video -- record the extra parent and leave the existing
+                # claim exactly as it is.
+                if parent_video_key is not None:
+                    child_parents.setdefault(dst_key, set()).add(parent_video_key)
+                    video_children.setdefault(parent_video_key, set()).add(dst_key)
+                return True
+
             prev_dst = file_moves[prev_idx][1]
             _retract(dst_key)
             conflicts.append(
@@ -691,25 +716,33 @@ def _build_normalize_tv_plan(tv_root, data):
                  f"neither. '{os.path.basename(src_path)}' exists in "
                  f"{_where(prev_src)} and {_where(src_path)}; "
                  "move or rename one by hand", dst_path))
-            # The retracted video's own claimed subtitles (or other children)
-            # must go with it -- otherwise a subtitle for the losing video
-            # still moves, orphaned from a video that stayed put.
-            for child_key in video_children.pop(dst_key, []):
-                if child_key in claimed_dsts:
-                    child_src, child_idx = claimed_dsts[child_key]
-                    child_dst = file_moves[child_idx][1]
-                    _retract(child_key)
-                    conflicts.append(
-                        (f"'{os.path.basename(child_src)}' was queued to move with "
-                         f"'{os.path.basename(prev_src)}', whose move was cancelled "
-                         "above -- left in place so it stays with its video",
-                         child_dst))
+            # The retracted video's own claimed children (subtitles) must go
+            # with it -- but only if this was their LAST live parent. A
+            # subtitle shared with another video that is still moving stays
+            # queued; it has a destination regardless of which video it
+            # travels with.
+            for child_key in video_children.pop(dst_key, ()):
+                parents = child_parents.get(child_key)
+                if parents is None:
+                    continue
+                parents.discard(dst_key)
+                if parents or child_key not in claimed_dsts:
+                    continue
+                child_src, child_idx = claimed_dsts[child_key]
+                child_dst = file_moves[child_idx][1]
+                _retract(child_key)
+                conflicts.append(
+                    (f"'{os.path.basename(child_src)}' was queued to move with "
+                     f"'{os.path.basename(prev_src)}', whose move was cancelled "
+                     "above -- left in place so it stays with its video",
+                     child_dst))
             return False
 
         claimed_dsts[dst_key] = (src_path, len(file_moves))
         file_moves.append((src_path, dst_path, show_name))
         if parent_video_key is not None:
-            video_children.setdefault(parent_video_key, []).append(dst_key)
+            child_parents[dst_key] = {parent_video_key}
+            video_children.setdefault(parent_video_key, set()).add(dst_key)
         return True
 
     # Build filename -> season lookup from tvshows.json
