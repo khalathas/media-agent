@@ -133,6 +133,15 @@ def rename_case_only(old_path, new_path):
     considers them the same file already. Renaming to a distinct
     intermediate name first, then to the final name, forces the case
     change to actually land regardless of that.
+
+    If the second move fails -- a network share hiccup, an antivirus lock, a
+    permissions change, all realistic on the same shares this tool targets --
+    the file would otherwise be stranded at tmp_path, a name nothing else in
+    the system knows about: the index still says old_path, and the file is at
+    neither old_path nor new_path. This rolls back to old_path on failure, so
+    the caller's normal "rename failed, nothing changed" assumption holds. If
+    the rollback itself fails too, the raised error says exactly where the
+    file actually is -- that location must never be silently lost.
     """
     tmp_path = new_path + '.case-rename-tmp'
     n = 1
@@ -140,4 +149,16 @@ def rename_case_only(old_path, new_path):
         n += 1
         tmp_path = f"{new_path}.case-rename-tmp{n}"
     shutil.move(old_path, tmp_path)
-    shutil.move(tmp_path, new_path)
+    try:
+        shutil.move(tmp_path, new_path)
+    except Exception as exc:
+        try:
+            shutil.move(tmp_path, old_path)
+        except Exception as rollback_exc:
+            raise OSError(
+                f"case-only rename failed and the automatic rollback also "
+                f"failed -- the file is currently at: {tmp_path}\n"
+                f"    original error: {exc}\n"
+                f"    rollback error: {rollback_exc}"
+            ) from exc
+        raise

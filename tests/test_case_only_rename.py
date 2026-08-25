@@ -70,6 +70,64 @@ class TestRenameCaseOnly:
         assert new.read_bytes() == b"real content"
         assert stray.read_bytes() == b"unrelated stray file", "stray temp file was overwritten"
 
+    def test_rolls_back_if_the_second_move_fails(self, tmp_path, monkeypatch):
+        """A network hiccup, AV lock, or permissions change on the second
+        move must not strand the file at its internal tmp name -- it goes
+        back to old_path, so the caller's "rename failed, nothing changed"
+        assumption still holds.
+        """
+        import shutil as shutil_mod
+        old = tmp_path / "the.matrix.mkv"
+        old.write_bytes(b"content")
+        new = tmp_path / "The.Matrix.mkv"
+
+        real_move = shutil_mod.move
+        calls = {"n": 0}
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("simulated failure")
+            return real_move(src, dst)
+        monkeypatch.setattr('media_agent.probe.shutil.move', flaky)
+
+        with pytest.raises(OSError):
+            rename_case_only(str(old), str(new))
+
+        # os.listdir, not Path.exists() -- exists() can't tell the two paths
+        # apart on a case-insensitive filesystem, which would hide the bug.
+        on_disk = os.listdir(tmp_path)
+        assert on_disk == ["the.matrix.mkv"], (
+            f"file was not rolled back to its original name: {on_disk}"
+        )
+        assert old.read_bytes() == b"content"
+
+    def test_reports_the_real_location_if_rollback_also_fails(self, tmp_path,
+                                                               monkeypatch):
+        """Genuinely stranded is possible (rollback can fail too). The file's
+        actual location must never be silently lost -- it's the one thing
+        that lets a human recover it by hand.
+        """
+        import shutil as shutil_mod
+        old = tmp_path / "the.matrix.mkv"
+        old.write_bytes(b"content")
+        new = tmp_path / "The.Matrix.mkv"
+
+        real_move = shutil_mod.move
+        calls = {"n": 0}
+        def always_fail_after_first(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_move(src, dst)
+            raise OSError(f"simulated failure {calls['n']}")
+        monkeypatch.setattr('media_agent.probe.shutil.move', always_fail_after_first)
+
+        with pytest.raises(OSError) as exc_info:
+            rename_case_only(str(old), str(new))
+
+        assert ".case-rename-tmp" in str(exc_info.value), (
+            "error message doesn't say where the file actually ended up"
+        )
+
 
 @pytest.fixture
 def canonicalize_case_only_library(tmp_path):
