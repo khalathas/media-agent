@@ -313,3 +313,77 @@ class TestSharedSubtitleSurvivesOnePartnerConflicting:
             "the shared subtitle was stranded even though one of its two "
             "parent videos was never in conflict and moved successfully"
         )
+
+
+@pytest.fixture
+def two_different_subtitles_collide(tmp_path):
+    """Three videos, two of them sharing one subtitle, the third in a
+    different folder with its OWN, genuinely different subtitle -- but all
+    subtitles land on the same destination filename regardless of which
+    folder or video they came from.
+
+    Found by the fifth-pass reviewer: retracting a video correctly cascaded
+    down to its shared children, but nothing cascaded back up from a
+    conflicted CHILD to the video(s) depending on it. Reproduced before
+    fixing: all three videos moved into Season 01, both subtitles were left
+    behind, contradicting the "moving together or not at all" episode-group
+    promise this tool makes everywhere else.
+    """
+    root = tmp_path / "Library"
+    show = root / "TV Shows" / "Breaking Bad (2008)"
+    (root / "Movies").mkdir(parents=True)
+    (root / "Music").mkdir()
+    show.mkdir(parents=True)
+    (show / "alt").mkdir()
+
+    (show / "S01E01.mkv").write_bytes(b"mkv")
+    (show / "S01E01.mp4").write_bytes(b"mp4")
+    (show / "S01E01.srt").write_bytes(b"root subs")
+    (show / "alt" / "S01E01.avi").write_bytes(b"avi")
+    (show / "alt" / "S01E01.srt").write_bytes(b"alt subs -- different content")
+
+    (root / "tvshows.json").write_text(json.dumps({
+        "shows": [{"name": "Breaking Bad", "year": "2008",
+                   "folder": "Breaking Bad (2008)",
+                   "seasons": [{"season": 1, "episodes": [
+                       {"filename": "S01E01.mkv", "season": 1, "episode": 1},
+                       {"filename": "S01E01.mp4", "season": 1, "episode": 1},
+                       {"filename": "S01E01.avi", "season": 1, "episode": 1},
+                   ]}]}]
+    }), encoding='utf-8')
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
+    config_mod.set_config(Config.load(cfg_path))
+    yield {"root": root, "show": show}
+    config_mod.CONFIG = None
+
+
+class TestConflictingSubtitleCancelsAllDependentVideos:
+    """A genuine conflict between two DIFFERENT subtitle files must cancel
+    the whole episode group -- every video that depends on either subtitle --
+    not just the subtitle claims themselves.
+    """
+
+    def test_plan_moves_nothing(self, two_different_subtitles_collide):
+        data = json.loads(
+            (two_different_subtitles_collide["root"] / "tvshows.json")
+            .read_text(encoding='utf-8'))
+        plan = _build_normalize_tv_plan(
+            str(two_different_subtitles_collide["root"] / "TV Shows"), data)
+
+        assert plan['file_moves'] == [], (
+            f"expected the whole episode group cancelled, got {plan['file_moves']}"
+        )
+
+    def test_apply_leaves_every_file_exactly_where_it_was(
+            self, two_different_subtitles_collide):
+        cmd_normalize_tv(Args(apply=True))
+
+        show = two_different_subtitles_collide["show"]
+        assert not (show / "Season 01").exists(), "a conflict should create nothing"
+        assert (show / "S01E01.mkv").exists()
+        assert (show / "S01E01.mp4").exists()
+        assert (show / "alt" / "S01E01.avi").exists()
+        assert (show / "S01E01.srt").exists(), "root subtitle moved despite the conflict"
+        assert (show / "alt" / "S01E01.srt").exists(), "alt subtitle moved despite the conflict"
