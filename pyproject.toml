@@ -32,7 +32,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# build + hatchling: tests/test_packaging.py builds a real wheel/sdist with
+# `python -m build --no-isolation`, which needs both already importable in
+# the current environment. Without them here, `pip install -e ".[dev]"` --
+# the exact command CONTRIBUTING.md and CI both document -- leaves pytest
+# unable to run that file at all.
+dev = ["pytest>=8.0", "build>=1.0", "hatchling>=1.18"]
 
 [project.scripts]
 media-agent = "media_agent.cli:main"

@@ -2,7 +2,7 @@
 
 media-agent's own source code is licensed MIT — see [LICENSE](LICENSE). That license covers only the code in this repository.
 
-Installing media-agent also installs its dependencies, each under its own license, unmodified and used as an ordinary Python import. This is the complete runtime install — the two direct dependencies media-agent declares, plus every package pip pulls in transitively along with them (confirmed with `pip show`, not assumed):
+Installing media-agent also installs its dependencies, each under its own license, unmodified and used as an ordinary Python import. Below is what a real install actually pulled in — the two direct dependencies media-agent declares, plus every package pip resolved transitively along with them (confirmed with `pip show` on 2026-08-25, not assumed):
 
 | Package | License | Direct or transitive |
 |---|---|---|
@@ -13,7 +13,9 @@ Installing media-agent also installs its dependencies, each under its own licens
 | [idna](https://github.com/kjd/idna) | BSD-3-Clause | Transitive (via requests) |
 | [urllib3](https://github.com/urllib3/urllib3) | MIT | Transitive (via requests) |
 
-`mutagen` has no further dependencies of its own. None of the transitive packages carry copyleft terms — mutagen's GPL-2.0-or-later is the only one that does.
+`mutagen` has no further dependencies of its own. `mutagen` is the only *strong*-copyleft dependency here — MPL-2.0 (certifi) is a weaker, file-level copyleft that doesn't extend the same way GPL does, and MIT/BSD-3-Clause aren't copyleft at all.
+
+media-agent's own dependency declarations are lower-bounded (`mutagen>=1.47.0`, `requests>=2.31.0`), not pinned, so a future install can legitimately resolve different versions — and, in principle, a different transitive package entirely if requests' own dependencies ever change. Treat this table as a snapshot of one real install on the date above, not a permanent guarantee; re-run `pip show` on your actual environment before relying on it for anything that matters.
 
 This file is a disclosure of what's installed, not a legal opinion on how the licenses interact. If you plan to redistribute media-agent bundled with its dependencies (rather than having users `pip install` them separately), or to build a derivative product from this project, get your own advice on what that requires — in particular, `mutagen`'s GPL terms may impose obligations on a bundled, combined distribution that don't apply to media-agent's own MIT-licensed code in isolation.
 
