@@ -289,4 +289,4 @@ Run `media-agent doctor` to confirm it's recognised.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+media-agent's own code is MIT — see [LICENSE](LICENSE). It depends on a few third-party packages under their own licenses; see [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
