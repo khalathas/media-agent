@@ -577,9 +577,53 @@ def _build_normalize_tv_plan(tv_root, data):
     """
     show_renames   = []   # (old_path, new_path)
     season_renames = []   # (old_path, new_path, show_display_name)
-    file_moves     = []   # (src_path, dst_path, show_display_name)
+    # Entries can become None -- a retracted claim -- and are filtered out
+    # before the plan is returned. See _claim_destination.
+    file_moves     = []   # (src_path, dst_path, show_display_name) | None
     conflicts      = []   # (reason, path)
-    claimed_dsts   = {}   # normalised destination -> the source that claimed it
+    claimed_dsts   = {}   # normalised destination -> (source, index in file_moves)
+    poisoned_dsts  = set()  # destinations with 2+ claimants -- never claimable again
+
+    def _claim_destination(dst_key, src_path, dst_path, show_name, root_for_display):
+        """Queue a move, or turn it into a conflict if something else wants it too.
+
+        Two files can compute the same destination -- most often the same
+        episode filename sitting in a 720p/ and a 1080p/ folder. shutil.move
+        overwrites silently on both platforms, so if both were queued the
+        second move would destroy the first file.
+
+        The first claimant to arrive is provisionally queued in file_moves. If
+        a second claimant shows up, BOTH the earlier queued entry and this one
+        become conflicts instead -- the earlier one is retracted from
+        file_moves (set to None; filtered out before the plan is returned) and
+        the destination is marked poisoned so a third claimant does not slip
+        through and silently reclaim it once the dict entry is gone.
+        """
+        def _where(pth):
+            rel = os.path.relpath(pth, root_for_display)
+            parent = os.path.dirname(rel)
+            return parent.replace(os.sep, '/') if parent else '(show root)'
+
+        if dst_key in poisoned_dsts:
+            conflicts.append(
+                ("Two files claim the same target — keeping both, moving "
+                 f"neither. '{os.path.basename(src_path)}' in {_where(src_path)} "
+                 "also wants this target; move or rename it by hand", dst_path))
+            return
+
+        if dst_key in claimed_dsts:
+            prev_src, prev_idx = claimed_dsts.pop(dst_key)
+            file_moves[prev_idx] = None
+            poisoned_dsts.add(dst_key)
+            conflicts.append(
+                ("Two files claim the same target — keeping both, moving "
+                 f"neither. '{os.path.basename(src_path)}' exists in "
+                 f"{_where(prev_src)} and {_where(src_path)}; "
+                 "move or rename one by hand", dst_path))
+            return
+
+        claimed_dsts[dst_key] = (src_path, len(file_moves))
+        file_moves.append((src_path, dst_path, show_name))
 
     # Build filename -> season lookup from tvshows.json
     # Key: (show_folder, filename) -> season_num
@@ -782,23 +826,8 @@ def _build_normalize_tv_plan(tv_root, data):
                     conflicts.append((f"File move conflict: target exists", dst_file))
                     continue
                 dst_key = os.path.normcase(os.path.normpath(dst_file))
-                if dst_key in claimed_dsts:
-                    # Name the containing folders, not the filenames -- the
-                    # filenames are identical, that is the whole problem.
-                    def _where(pth):
-                        rel = os.path.relpath(pth, show_path_effective)
-                        parent = os.path.dirname(rel)
-                        return parent.replace(os.sep, '/') if parent else '(show root)'
-                    conflicts.append(
-                        ("Two files claim the same target — keeping both, moving "
-                         f"neither. '{os.path.basename(src_file)}' exists in "
-                         f"{_where(claimed_dsts[dst_key])} and "
-                         f"{_where(src_file)}; move or rename one by hand",
-                         dst_file))
-                    continue
-                claimed_dsts[dst_key] = src_file
-
-                file_moves.append((src_file, dst_file, effective_folder))
+                _claim_destination(dst_key, src_file, dst_file, effective_folder,
+                                   show_path_effective)
 
                 # Also move matching .srt subtitle files
                 stem = os.path.splitext(fname)[0]
@@ -812,19 +841,19 @@ def _build_normalize_tv_plan(tv_root, data):
                         srt_dst = os.path.join(show_path_effective, target_dir, other_file).replace('\\', '/')
                         if srt_src == srt_dst:
                             continue
-                        srt_key = os.path.normcase(os.path.normpath(srt_dst))
-                        if srt_key in claimed_dsts or os.path.exists(srt_dst):
+                        if os.path.exists(srt_dst):
                             conflicts.append(
-                                ('Subtitle move conflict: target already claimed',
+                                ('Subtitle move conflict: target already exists',
                                  srt_dst))
                             continue
-                        claimed_dsts[srt_key] = srt_src
-                        file_moves.append((srt_src, srt_dst, effective_folder))
+                        srt_key = os.path.normcase(os.path.normpath(srt_dst))
+                        _claim_destination(srt_key, srt_src, srt_dst, effective_folder,
+                                           show_path_effective)
 
     return {
         'show_renames':   show_renames,
         'season_renames': season_renames,
-        'file_moves':     file_moves,
+        'file_moves':     [m for m in file_moves if m is not None],
         'conflicts':      conflicts,
     }
 
