@@ -209,23 +209,34 @@ def get_episode_info(file_path):
         return {'error': str(e)}
 
 
+def _subtitle_matches_video(srt_fname, video_stem):
+    """True if srt_fname is an external .srt subtitle for video_stem.
+
+    Matches 'episode.srt' and language-tagged variants like 'episode.en.srt'
+    and 'episode.fr.srt'. The single matcher both find_external_subtitles
+    and the normalize-tv move logic use, so a file that's discovered as a
+    match is also moved as one -- see _build_normalize_tv_plan, which used
+    to compare stems exactly and so left language-tagged subtitles behind.
+    """
+    if not srt_fname.lower().endswith('.srt'):
+        return False
+    base = srt_fname.lower()[:-4]
+    if re.match(r'.*\.[a-z]{2,3}$', base):
+        base = base.rsplit('.', 1)[0]
+    return base == video_stem.lower()
+
+
 def find_external_subtitles(video_path):
     """
     Find .srt files in the same directory that belong to this video.
     Matches 'episode.srt', 'episode.en.srt', 'episode.fr.srt', etc.
     """
     video_dir  = os.path.dirname(video_path)
-    video_stem = os.path.splitext(os.path.basename(video_path))[0].lower()
+    video_stem = os.path.splitext(os.path.basename(video_path))[0]
     srts = []
     try:
         for fname in os.listdir(video_dir):
-            if not fname.lower().endswith('.srt'):
-                continue
-            # Strip .srt, then optionally strip a 2-3 char language code
-            base = fname.lower()[:-4]
-            if re.match(r'.*\.[a-z]{2,3}$', base):
-                base = base.rsplit('.', 1)[0]
-            if base == video_stem:
+            if _subtitle_matches_video(fname, video_stem):
                 srts.append(fname)
     except Exception:
         pass
@@ -872,10 +883,12 @@ def _build_normalize_tv_plan(tv_root, data):
                 _claim_destination(dst_key, src_file, dst_file, effective_folder,
                                    show_path_effective)
 
-                # Also move matching .srt subtitle files
+                # Also move matching .srt subtitle files -- including
+                # language-tagged ones (episode.en.srt), via the same
+                # matcher find_external_subtitles uses for the index.
                 stem = os.path.splitext(fname)[0]
                 for other_file in filenames:
-                    if other_file.lower().endswith('.srt') and os.path.splitext(other_file)[0] == stem:
+                    if _subtitle_matches_video(other_file, stem):
                         srt_src = os.path.join(show_path_effective,
                                                rel_dir if rel_dir else '',
                                                other_file).replace('\\', '/')
