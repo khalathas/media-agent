@@ -28,8 +28,7 @@ vendor/ffmpeg/
 .DS_Store
 Thumbs.db
 desktop.ini
-# Review documents — internal, not part of the published project
-CODE_REVIEW_PUBLIC_RELEASE.md
-REVIEW-PASS-2.md
-REVIEW-PASS-3.md
-CODE_REVIEW_THIRD_PASS.md
+
+# Review handoffs and result docs -- internal, not part of the published
+# project. Both directions (brief -> reviewer, findings -> us) live here.
+codereview/
