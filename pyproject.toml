@@ -1,5 +1,9 @@
 [build-system]
-requires = ["hatchling"]
+# 1.26.0 is the true floor for the `license-files` list form below (PEP 639) --
+# verified directly, not assumed: 1.25.0 and earlier raise
+# `TypeError: Field 'project.license-files' must be a table` at build time;
+# 1.26.0 is the first release that accepts it.
+requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
@@ -37,7 +41,7 @@ dependencies = [
 # the current environment. Without them here, `pip install -e ".[dev]"` --
 # the exact command CONTRIBUTING.md and CI both document -- leaves pytest
 # unable to run that file at all.
-dev = ["pytest>=8.0", "build>=1.0", "hatchling>=1.18"]
+dev = ["pytest>=8.0", "build>=1.0", "hatchling>=1.26"]
 
 [project.scripts]
 media-agent = "media_agent.cli:main"
