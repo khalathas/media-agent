@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections import Counter
 from datetime import datetime
 
 from .config import get_config
@@ -257,13 +258,45 @@ def _show_scoped_key(show_folder, fname):
     return f"{show_folder}/{fname}".replace('\\', '/').lower()
 
 
-def _lookup_existing(existing_episodes, fpath, show_folder, fname):
-    """Find a cached episode, preferring the precise key."""
+def _ambiguous_legacy_basenames(tv_root, show_folder):
+    """Basenames that appear more than once anywhere under this show's folder.
+
+    The show-scoped fallback key (_show_scoped_key) cannot tell
+    720p/S01E01.mkv from 1080p/S01E01.mkv apart -- both hash to
+    "showfolder/s01e01.mkv". Used to refuse that fallback for any basename
+    that isn't actually unique within the show, so a legacy (pathless)
+    cache entry never gets handed to the wrong file.
+
+    Deliberately a full recursive walk, broader than the specific
+    Season-dir / flat / other-dir traversal scan_tv_shows performs: over-
+    detecting an ambiguity in some edge case scan_tv_shows wouldn't itself
+    reach just costs an unnecessary fresh probe, never a wrong one.
+    """
+    counts = Counter()
+    show_path = os.path.join(tv_root, show_folder)
+    for root, dirs, fnames in os.walk(show_path):
+        dirs[:] = [d for d in dirs if not d.startswith('@') and not d.startswith('.')
+                   and d.lower() not in _SKIP_DIRS]
+        for fname in fnames:
+            if os.path.splitext(fname)[1].lower() in get_config().video_exts:
+                counts[fname.lower()] += 1
+    return {name for name, n in counts.items() if n > 1}
+
+
+def _lookup_existing(existing_episodes, fpath, show_folder, fname, ambiguous_basenames=None):
+    """Find a cached episode, preferring the precise key.
+
+    The show-scoped fallback (for legacy, pathless index entries) is
+    refused when `fname` is one of this show's ambiguous_basenames -- see
+    _ambiguous_legacy_basenames for why that key can't be trusted there.
+    """
     if not existing_episodes:
         return None
     hit = existing_episodes.get(_episode_path_key(fpath))
     if hit is not None:
         return hit
+    if ambiguous_basenames and fname.lower() in ambiguous_basenames:
+        return None
     return existing_episodes.get(_show_scoped_key(show_folder, fname))
 
 
@@ -332,13 +365,15 @@ def _build_episode(fname, fpath, season_from_folder=None, existing=None):
 
 
 def _collect_episodes_from_dir(dir_path, season_hint=None, existing_episodes=None,
-                               show_folder=''):
+                               show_folder='', ambiguous_basenames=None):
     """
     Walk a directory (non-recursively) and return list of (ep_dict, season_bucket)
     for every video file found. Skips non-video files.
     season_hint: if set, used as season_from_folder for all files here.
     existing_episodes: cache from a prior index, keyed by episode path.
     show_folder: the show's top-level folder name, used for the fallback key.
+    ambiguous_basenames: basenames that collide elsewhere in this show; see
+                        _ambiguous_legacy_basenames.
     """
     results = []
     try:
@@ -346,7 +381,8 @@ def _collect_episodes_from_dir(dir_path, season_hint=None, existing_episodes=Non
             if os.path.splitext(fname)[1].lower() not in get_config().video_exts:
                 continue
             fpath = os.path.join(dir_path, fname).replace('\\', '/')
-            existing = _lookup_existing(existing_episodes, fpath, show_folder, fname)
+            existing = _lookup_existing(existing_episodes, fpath, show_folder, fname,
+                                        ambiguous_basenames=ambiguous_basenames)
             ep, bucket = _build_episode(fname, fpath, season_from_folder=season_hint,
                                         existing=existing)
             results.append((ep, bucket))
@@ -417,6 +453,12 @@ def scan_tv_shows(existing_episodes=None):
         def add_ep(ep, bucket):
             episodes_by_season.setdefault(bucket, []).append(ep)
 
+        # Only worth the extra walk when there's a legacy cache that could
+        # otherwise hand one file another's probe data (see
+        # _ambiguous_legacy_basenames).
+        ambiguous_basenames = (
+            _ambiguous_legacy_basenames(tv_root, folder) if existing_episodes else None)
+
         # 1. Proper Season N subfolders — folder season number is authoritative
         for season_dir in season_dirs:
             m = re.search(r'\bSeason\s*(\d+)', season_dir, re.IGNORECASE)
@@ -424,13 +466,14 @@ def scan_tv_shows(existing_episodes=None):
             season_path = os.path.join(show_path, season_dir)
             for ep, _ in _collect_episodes_from_dir(season_path, season_hint=season_num,
                                                      existing_episodes=existing_episodes,
-                       show_folder=folder):
+                       show_folder=folder, ambiguous_basenames=ambiguous_basenames):
                 add_ep(ep, season_num)
 
         # 2. Flat video files directly in show folder — infer season from filename
         for fname in sorted(flat_videos):
             fpath = os.path.join(show_path, fname).replace('\\', '/')
-            existing = _lookup_existing(existing_episodes, fpath, folder, fname)
+            existing = _lookup_existing(existing_episodes, fpath, folder, fname,
+                                        ambiguous_basenames=ambiguous_basenames)
             ep, bucket = _build_episode(fname, fpath, season_from_folder=None,
                                         existing=existing)
             add_ep(ep, bucket)
@@ -464,7 +507,7 @@ def scan_tv_shows(existing_episodes=None):
                     season_path = os.path.join(sub_path, season_dir)
                     for ep, _ in _collect_episodes_from_dir(season_path, season_hint=season_num,
                                                              existing_episodes=existing_episodes,
-                       show_folder=folder):
+                       show_folder=folder, ambiguous_basenames=ambiguous_basenames):
                         add_ep(ep, season_num)
             elif sub_other_dirs:
                 # Deeper nesting (e.g. Doctor Who Classic: show → actor → serial → episodes)
@@ -472,19 +515,19 @@ def scan_tv_shows(existing_episodes=None):
                 # (e.g. a pack folder that has episodes + a Subs/ subfolder alongside them)
                 for ep, bucket in _collect_episodes_from_dir(sub_path, season_hint=None,
                                                               existing_episodes=existing_episodes,
-                       show_folder=folder):
+                       show_folder=folder, ambiguous_basenames=ambiguous_basenames):
                     add_ep(ep, bucket)
                 for deep_sub in sorted(sub_other_dirs):
                     deep_path = os.path.join(sub_path, deep_sub)
                     for ep, bucket in _collect_episodes_from_dir(deep_path, season_hint=None,
                                                                   existing_episodes=existing_episodes,
-                       show_folder=folder):
+                       show_folder=folder, ambiguous_basenames=ambiguous_basenames):
                         add_ep(ep, bucket)
             else:
                 # Flat files in a subdirectory — infer season from filenames
                 for ep, bucket in _collect_episodes_from_dir(sub_path, season_hint=None,
                                                               existing_episodes=existing_episodes,
-                       show_folder=folder):
+                       show_folder=folder, ambiguous_basenames=ambiguous_basenames):
                     add_ep(ep, bucket)
 
         # Build seasons list: sort seasons numerically, season 0 always last

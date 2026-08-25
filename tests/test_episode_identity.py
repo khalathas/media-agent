@@ -120,3 +120,95 @@ class TestCacheReuse:
         fpath = str(two_shows / "TV Shows" / "Firefly (2002)" / "Season 01" / "S01E01.mkv")
         assert _lookup_existing({}, fpath, "Firefly (2002)", "S01E01.mkv") is None
         assert _lookup_existing(None, fpath, "Firefly (2002)", "S01E01.mkv") is None
+
+
+class TestAmbiguousLegacyFallbackWithinAShow:
+    """P2-6: the legacy (pathless) fallback is scoped to show+basename, so
+    it still cannot tell 720p/S01E01.mkv from 1080p/S01E01.mkv apart within
+    one show. Both hash to the same "showfolder/s01e01.mkv" key, so one
+    file's cached probe data could leak into the other. Once a legacy key
+    is known to be ambiguous (2+ real files share it), neither file should
+    get a cache hit -- both must be freshly probed.
+    """
+
+    @pytest.fixture
+    def one_show_two_qualities(self, tmp_path):
+        """One show, two subfolders, same basename in each."""
+        root = tmp_path / "Library"
+        (root / "Movies").mkdir(parents=True)
+        (root / "Music").mkdir()
+        show = root / "TV Shows" / "Breaking Bad (2008)"
+        (show / "720p").mkdir(parents=True)
+        (show / "1080p").mkdir(parents=True)
+        (show / "720p" / "S01E01.mkv").write_bytes(b"low-res copy")
+        (show / "1080p" / "S01E01.mkv").write_bytes(b"high-res copy")
+
+        cfg_path = tmp_path / "c.json"
+        cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
+        config_mod.set_config(Config.load(cfg_path))
+        yield root
+        config_mod.CONFIG = None
+
+    def test_ambiguous_basename_is_detected(self, one_show_two_qualities):
+        from media_agent.tv import _ambiguous_legacy_basenames
+        tv_root = one_show_two_qualities / "TV Shows"
+        ambiguous = _ambiguous_legacy_basenames(str(tv_root), "Breaking Bad (2008)")
+        assert ambiguous == {"s01e01.mkv"}
+
+    def test_lookup_refuses_the_shared_fallback_key_when_ambiguous(
+            self, one_show_two_qualities):
+        """Direct reproduction at the _lookup_existing level: same show,
+        same fname, cache has one entry under the shared fallback key --
+        before the fix this always hands it back regardless of which of
+        the two real files is asking.
+        """
+        from media_agent.tv import _ambiguous_legacy_basenames
+        show = one_show_two_qualities / "TV Shows" / "Breaking Bad (2008)"
+        cache = {
+            _show_scoped_key("Breaking Bad (2008)", "S01E01.mkv"):
+                cached(None, height=999, season=1),
+        }
+        ambiguous = _ambiguous_legacy_basenames(
+            str(one_show_two_qualities / "TV Shows"), "Breaking Bad (2008)")
+
+        for sub in ("720p", "1080p"):
+            fpath = str(show / sub / "S01E01.mkv")
+            hit = _lookup_existing(cache, fpath, "Breaking Bad (2008)", "S01E01.mkv",
+                                   ambiguous_basenames=ambiguous)
+            assert hit is None, (
+                f"{sub}/S01E01.mkv got a cache hit from an ambiguous shared key "
+                "-- it could be the other quality's stale data"
+            )
+
+    def test_scan_forces_a_fresh_probe_for_both_instead_of_leaking(
+            self, one_show_two_qualities, monkeypatch):
+        """End-to-end reproduction through scan_tv_shows: a legacy cache
+        entry under the shared key must not leak into either real file.
+        Confirmed by making a fresh probe distinguishable (real height per
+        path) from the stale cached value (999) and asserting neither
+        episode ends up with the stale one.
+        """
+        import media_agent.tv as tv_mod
+
+        def fake_probe(fpath):
+            height = 720 if '720p' in fpath else 1080
+            return {'width': 1280, 'height': height, 'video_codec': 'h264',
+                    'audio_codec': 'aac', 'bitrate': '1 kbps', 'has_subtitles': False,
+                    'filesize': 1, 'duration': 1.0, 'date_added': '2026-01-01 00:00:00'}
+        monkeypatch.setattr(tv_mod, 'get_episode_info', fake_probe)
+
+        stale_cache = {
+            _show_scoped_key("Breaking Bad (2008)", "S01E01.mkv"):
+                cached(None, height=999, season=1),
+        }
+
+        shows = by_folder(scan_tv_shows(existing_episodes=stale_cache))
+        episodes = shows["Breaking Bad (2008)"]['seasons'][0]['episodes']
+        heights = sorted(ep['height'] for ep in episodes)
+        assert 999 not in heights, (
+            "a real file inherited the stale legacy cache entry from the "
+            "ambiguous shared show+basename key instead of being re-probed"
+        )
+        assert heights == [720, 1080], (
+            "both files should have been freshly (and correctly) probed"
+        )
