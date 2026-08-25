@@ -66,7 +66,7 @@ Then **close and reopen your terminal**, and check it worked:
 ffprobe -version
 ```
 
-If you'd rather not use a package manager, download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have a copy of this project's source, `scripts/install_ffmpeg.ps1` (Windows) or `scripts/install_ffmpeg.sh` will fetch it into `vendor/ffmpeg/` for you — they download a pinned, checksum-verified build (SHA-256 on Windows, MD5 on Linux — the only digest the upstream Linux builds publish) and check for unsafe archive contents before extracting. A package manager is still the stronger guarantee, since it also verifies a cryptographic signature, which these scripts can't.
+If you'd rather not use a package manager, download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have a copy of this project's source, `scripts/install_ffmpeg.ps1` (Windows) or `scripts/install_ffmpeg.sh` will fetch it into `vendor/ffmpeg/` for you — they download a pinned, checksum-verified build (SHA-256 on Windows, MD5 on Linux — the only digest the upstream Linux builds publish) and check for unsafe archive contents before extracting. A package manager is still the stronger route: it goes through its own maintained distribution pipeline with verification these scripts don't attempt to replicate, rather than trusting one hardcoded checksum against a single third-party build.
 
 **Git.** The install command below (`pip install git+...`) needs it — pip uses it behind the scenes to fetch the source, even though you never type a `git` command yourself. Check whether you already have it:
 

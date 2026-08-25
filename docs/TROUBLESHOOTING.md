@@ -140,7 +140,7 @@ sudo apt install ffmpeg      # Debian / Ubuntu
 
 Then **close and reopen your terminal** — a running terminal won't see a newly installed program. Check with `ffprobe -version`.
 
-Or download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have the project source, `scripts/install_ffmpeg.ps1` / `scripts/install_ffmpeg.sh` will fetch a copy into `vendor/ffmpeg/` — they pin a specific version and verify its checksum before extracting anything, and reject unsafe archive contents. A package manager is still the safer route, since it also verifies a cryptographic signature.
+Or download it from [ffmpeg.org/download](https://ffmpeg.org/download.html) and add it to your PATH. If you have the project source, `scripts/install_ffmpeg.ps1` / `scripts/install_ffmpeg.sh` will fetch a copy into `vendor/ffmpeg/` — they pin a specific version and verify its checksum before extracting anything, and reject unsafe archive contents. A package manager is still the safer route: it goes through its own maintained distribution pipeline rather than one hardcoded checksum against a single third-party build.
 
 If it's installed somewhere unusual, name it in your config:
 
