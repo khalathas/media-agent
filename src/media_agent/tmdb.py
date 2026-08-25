@@ -12,7 +12,8 @@ from .config import TMDB_API_BASE, TMDB_TOKEN_ENV, get_config, resolve_tmdb_toke
 from .console import confirm
 from .index import load_movies_json, save_movies_json, write_json_atomic
 from .naming import _STRIP_RE, _YEAR_RE, _canonical_filename
-from .probe import group_by_basename, scan_video_files, video_path_key
+from .probe import (group_by_basename, is_case_only_rename, rename_case_only,
+                    scan_video_files, video_path_key)
 
 
 _TMDB_ID_RE = re.compile(r'\{tmdb-(\d+)\}', re.IGNORECASE)
@@ -393,11 +394,15 @@ def cmd_tmdb_canonicalize(args):
             failed += 1
             continue
         new_path = os.path.join(os.path.dirname(old_path), p['new'])
-        if os.path.exists(new_path):
+        case_only = is_case_only_rename(old_path, new_path)
+        if os.path.exists(new_path) and not case_only:
             print(f"  SKIP (already exists): {p['new']}")
             continue
         try:
-            shutil.move(old_path, new_path)
+            if case_only:
+                rename_case_only(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
             entry = index_by_path.get(key) or index_by_name.get(p['old'])
             if entry is not None:
                 entry['name'] = p['new']
@@ -508,11 +513,15 @@ def cmd_tmdb_rename(args):
             failed += 1
             continue
         new_path = os.path.join(os.path.dirname(old_path), p['new'])
-        if os.path.exists(new_path):
+        case_only = is_case_only_rename(old_path, new_path)
+        if os.path.exists(new_path) and not case_only:
             print(f"  SKIP (already exists): {p['new']}")
             continue
         try:
-            shutil.move(old_path, new_path)
+            if case_only:
+                rename_case_only(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
             entry = index_by_path.get(key) or index_by_name.get(p['old'])
             if entry is not None:
                 entry['name'] = p['new']

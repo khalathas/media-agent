@@ -11,7 +11,8 @@ from .index import (_check_low_res_sync, _rebuild_low_res, load_movies_json,
                     save_movies_json)
 from .naming import build_clean_name, parse_movie_filename
 from .probe import (classify_resolution, get_media_info, group_by_basename,
-                    scan_video_files, video_path_key)
+                    is_case_only_rename, rename_case_only, scan_video_files,
+                    video_path_key)
 
 
 def migrate_index_paths(movies, disk_files):
@@ -260,11 +261,15 @@ def cmd_normalize(args):
     for p in proposals:
         old_path = p['path']
         new_path = os.path.join(os.path.dirname(old_path), p['new'])
-        if os.path.exists(new_path):
+        case_only = is_case_only_rename(old_path, new_path)
+        if os.path.exists(new_path) and not case_only:
             print(f"  SKIP (exists): {p['new']}")
             continue
         try:
-            shutil.move(old_path, new_path)
+            if case_only:
+                rename_case_only(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
             # Update the index entry for this exact file, and move its key with
             # it -- the path is the identity, so a rename changes it.
             entry = index_by_path.get(p['key'])

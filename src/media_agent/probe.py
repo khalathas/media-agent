@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime
 
@@ -106,3 +107,37 @@ def group_by_basename(disk_files):
     for key in disk_files:
         by_name.setdefault(os.path.basename(key), []).append(key)
     return by_name
+
+
+def is_case_only_rename(old_path, new_path):
+    """True if new_path names the same file as old_path, differing only in
+    letter case (or path-separator style) -- not a different file that
+    already happens to occupy that name.
+
+    os.path.exists(new_path) is True for both on a case-insensitive
+    filesystem (Windows, and macOS by default), which otherwise makes a
+    pure case correction ("the.matrix.mkv" -> "The.Matrix.mkv") look like a
+    real conflict and get skipped and reported as "target already exists"
+    -- nothing was wrong, and nothing happened.
+    """
+    return (old_path != new_path
+            and os.path.normcase(os.path.normpath(old_path))
+                == os.path.normcase(os.path.normpath(new_path)))
+
+
+def rename_case_only(old_path, new_path):
+    """Perform a case-only rename via a temporary intermediate name.
+
+    A direct move/rename between two paths that differ only in case can
+    silently no-op on some filesystem/OS combinations, since the OS
+    considers them the same file already. Renaming to a distinct
+    intermediate name first, then to the final name, forces the case
+    change to actually land regardless of that.
+    """
+    tmp_path = new_path + '.case-rename-tmp'
+    n = 1
+    while os.path.exists(tmp_path):
+        n += 1
+        tmp_path = f"{new_path}.case-rename-tmp{n}"
+    shutil.move(old_path, tmp_path)
+    shutil.move(tmp_path, new_path)
