@@ -304,14 +304,17 @@ def cmd_organize_music(args):
     dry_run = args.dry_run
     apply   = args.apply
 
-    if not dry_run and not apply:
-        print("Specify --dry-run to preview or --apply to execute.")
-        sys.exit(1)
+    # A bare invocation (neither flag) previews, exactly like --dry-run --
+    # matching every other command in the "changes your files" tier and the
+    # contract documented in README.md: nothing runs unless you add --apply.
+    # --dry-run wins if both are given, same reasoning as normalize-tv: a
+    # user passing both is being cautious and must get the safe reading.
+    preview_only = dry_run or not apply
 
     music_root = get_config().sections['music']
     needs_dir  = os.path.join(music_root, get_config().music_needs_tagging_dir)
 
-    print(f"{'[DRY RUN] ' if dry_run else ''}Organizing Music folder...")
+    print(f"{'[PREVIEW] ' if preview_only else ''}Organizing Music folder...")
     print(f"  {music_root}\n")
 
     moves      = []   # (src, dst)
@@ -461,7 +464,7 @@ def cmd_organize_music(args):
         if len(conflicts) > 10:
             print(f"  ... and {len(conflicts) - 10} more")
 
-    if dry_run:
+    if preview_only:
         if well_moves:
             print(f"\nSample moves (well-tagged flat, first 10):")
             for src, dst in well_moves[:10]:

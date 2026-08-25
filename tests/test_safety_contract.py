@@ -152,3 +152,23 @@ def test_dry_run_writes_a_preview_file(command, filename, library, no_input):
         "every command in this tier"
     )
     assert preview.read_text(encoding='utf-8').strip(), f"{filename} is empty"
+
+
+# P2-3: README.md states plainly that "Every command that changes files
+# previews by default" -- i.e. a bare invocation (no flags at all) behaves
+# like --dry-run, not like an error. organize-music alone violated this: it
+# printed "Specify --dry-run ... or --apply ..." and sys.exit(1)'d without
+# ever writing a preview. The test above only ever exercised --dry-run
+# explicitly, so it never caught this.
+@pytest.mark.parametrize("command,filename", PREVIEW_FILES)
+def test_bare_invocation_writes_a_preview_file(command, filename, library, no_input):
+    try:
+        command(Args())
+    except SystemExit:
+        pass
+    preview = library["root"] / filename
+    assert preview.exists(), (
+        f"a bare invocation (no --dry-run, no --apply) wrote no {filename} -- "
+        "README.md promises every destructive command previews by default"
+    )
+    assert preview.read_text(encoding='utf-8').strip(), f"{filename} is empty"

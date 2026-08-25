@@ -17,7 +17,7 @@ Commands are grouped by how much they can change. If you only remember one thing
 | `--apply` | Actually do it. Asks for confirmation first. |
 | `--yes` / `-y` | Skip the confirmation question. **Does not make the operation safer.** |
 
-Running a 🔴 command with neither `--dry-run` nor `--apply` does nothing and tells you so. That's deliberate — a bare command name can't damage anything.
+Running a 🔴 command with neither `--dry-run` nor `--apply` previews, exactly like passing `--dry-run` — it writes the preview file and changes nothing. That's deliberate — a bare command name can't damage anything. `--apply` is the only flag that ever changes files.
 
 ---
 
