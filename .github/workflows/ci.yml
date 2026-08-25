@@ -11,8 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
-        python-version: ["3.10", "3.12"]
+        # Matches the OS and Python classifiers advertised in pyproject.toml
+        # -- if you add a classifier there, add it here too.
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +29,34 @@ jobs:
       - name: Test
         run: pytest -v
 
-      - name: CLI smoke test
+      - name: CLI smoke test (editable install)
         run: |
+          media-agent --help
+          python -m media_agent --help
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build --wheel
+
+      - name: Install from wheel into a clean environment
+        shell: bash
+        run: |
+          python -m venv wheel-test-env
+          if [ -f wheel-test-env/bin/activate ]; then
+            source wheel-test-env/bin/activate
+          else
+            source wheel-test-env/Scripts/activate
+          fi
+          pip install dist/*.whl
+
+      - name: CLI smoke test (installed wheel)
+        shell: bash
+        run: |
+          if [ -f wheel-test-env/bin/activate ]; then
+            source wheel-test-env/bin/activate
+          else
+            source wheel-test-env/Scripts/activate
+          fi
           media-agent --help
           python -m media_agent --help
