@@ -28,6 +28,38 @@ class Args:
 
 
 @pytest.fixture
+def conflicted_episode_with_one_subtitle(tmp_path):
+    """Two videos with the same basename in different quality subfolders --
+    a genuine conflict, so normalize-tv must move neither. Only one of the two
+    has a matching subtitle.
+    """
+    root = tmp_path / "Library"
+    show = root / "TV Shows" / "Breaking Bad (2008)"
+    (root / "Movies").mkdir(parents=True)
+    (root / "Music").mkdir()
+    (show / "1080p").mkdir(parents=True)
+    (show / "720p").mkdir(parents=True)
+
+    (show / "1080p" / "S01E01.mkv").write_bytes(b"1080p copy")
+    (show / "1080p" / "S01E01.srt").write_bytes(b"subs")
+    (show / "720p" / "S01E01.mkv").write_bytes(b"720p copy")
+
+    (root / "tvshows.json").write_text(json.dumps({
+        "shows": [{"name": "Breaking Bad", "year": "2008",
+                   "folder": "Breaking Bad (2008)",
+                   "seasons": [{"season": 1, "episodes": [
+                       {"filename": "S01E01.mkv", "season": 1, "episode": 1},
+                   ]}]}]
+    }), encoding='utf-8')
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
+    config_mod.set_config(Config.load(cfg_path))
+    yield {"root": root, "show": show}
+    config_mod.CONFIG = None
+
+
+@pytest.fixture
 def show_with_tagged_subtitle(tmp_path):
     """One episode loose in the show root, with an .en.srt sibling, plus a
     plain (untagged) subtitle sibling for a second episode -- so the fix is
@@ -106,3 +138,43 @@ class TestNormalizeTvMovesTaggedSubtitles:
         # Nothing left loose in the show root.
         assert not (show / "S01E01.en.srt").exists()
         assert not (show / "S01E01.mkv").exists()
+
+
+class TestSubtitleStaysWithAConflictedVideo:
+    """A conflict must retract every claim it invalidates, not just the video's.
+
+    _claim_destination links a subtitle's claim to its video via
+    parent_video_key. When a later-arriving video retroactively poisons the
+    first video's destination, the first video's already-claimed subtitle
+    must be retracted along with it -- otherwise the subtitle moves alone,
+    orphaned from a video that the tool just promised to leave untouched.
+    """
+
+    def test_plan_does_not_move_the_subtitle(self, conflicted_episode_with_one_subtitle):
+        data = json.loads(
+            (conflicted_episode_with_one_subtitle["root"] / "tvshows.json")
+            .read_text(encoding='utf-8'))
+        plan = _build_normalize_tv_plan(
+            str(conflicted_episode_with_one_subtitle["root"] / "TV Shows"), data)
+
+        assert plan['file_moves'] == [], (
+            f"expected no moves at all (both videos conflict), got {plan['file_moves']}"
+        )
+        # The subtitle's cancellation must be visible as its own conflict,
+        # not merely absent -- a silent drop from the plan is as confusing
+        # as a silent move.
+        conflict_text = " ".join(reason for reason, _path in plan['conflicts'])
+        assert "S01E01.srt" in conflict_text
+
+    def test_apply_leaves_the_subtitle_with_its_video(
+            self, conflicted_episode_with_one_subtitle):
+        cmd_normalize_tv(Args(apply=True))
+
+        show = conflicted_episode_with_one_subtitle["show"]
+        assert not (show / "Season 01").exists(), "a conflict should create nothing"
+        assert (show / "1080p" / "S01E01.mkv").exists()
+        assert (show / "1080p" / "S01E01.srt").exists(), (
+            "the subtitle moved away from its video even though the video "
+            "itself correctly stayed put"
+        )
+        assert (show / "720p" / "S01E01.mkv").exists()

@@ -637,8 +637,14 @@ def _build_normalize_tv_plan(tv_root, data):
     conflicts      = []   # (reason, path)
     claimed_dsts   = {}   # normalised destination -> (source, index in file_moves)
     poisoned_dsts  = set()  # destinations with 2+ claimants -- never claimable again
+    # video dst_key -> [subtitle dst_key, ...] claimed on its behalf. When a
+    # video's claim is retracted, anything claimed here must be retracted too
+    # -- otherwise a subtitle can move alone, orphaned from the video it goes
+    # with, while the conflict message says "moving neither".
+    video_children = {}
 
-    def _claim_destination(dst_key, src_path, dst_path, show_name, root_for_display):
+    def _claim_destination(dst_key, src_path, dst_path, show_name, root_for_display,
+                           parent_video_key=None):
         """Queue a move, or turn it into a conflict if something else wants it too.
 
         Two files can compute the same destination -- most often the same
@@ -652,32 +658,59 @@ def _build_normalize_tv_plan(tv_root, data):
         file_moves (set to None; filtered out before the plan is returned) and
         the destination is marked poisoned so a third claimant does not slip
         through and silently reclaim it once the dict entry is gone.
+
+        parent_video_key, when given, records this claim (typically a
+        subtitle) as belonging to a video's claim, so that if the video is
+        later retracted this claim is retracted with it. Returns True if the
+        claim succeeded, False if it became a conflict.
         """
         def _where(pth):
             rel = os.path.relpath(pth, root_for_display)
             parent = os.path.dirname(rel)
             return parent.replace(os.sep, '/') if parent else '(show root)'
 
+        def _retract(key):
+            """Pull an already-queued claim back out and poison its key."""
+            _, idx = claimed_dsts.pop(key)
+            file_moves[idx] = None
+            poisoned_dsts.add(key)
+
         if dst_key in poisoned_dsts:
             conflicts.append(
                 ("Two files claim the same target — keeping both, moving "
                  f"neither. '{os.path.basename(src_path)}' in {_where(src_path)} "
                  "also wants this target; move or rename it by hand", dst_path))
-            return
+            return False
 
         if dst_key in claimed_dsts:
-            prev_src, prev_idx = claimed_dsts.pop(dst_key)
-            file_moves[prev_idx] = None
-            poisoned_dsts.add(dst_key)
+            prev_src, prev_idx = claimed_dsts[dst_key]
+            prev_dst = file_moves[prev_idx][1]
+            _retract(dst_key)
             conflicts.append(
                 ("Two files claim the same target — keeping both, moving "
                  f"neither. '{os.path.basename(src_path)}' exists in "
                  f"{_where(prev_src)} and {_where(src_path)}; "
                  "move or rename one by hand", dst_path))
-            return
+            # The retracted video's own claimed subtitles (or other children)
+            # must go with it -- otherwise a subtitle for the losing video
+            # still moves, orphaned from a video that stayed put.
+            for child_key in video_children.pop(dst_key, []):
+                if child_key in claimed_dsts:
+                    child_src, child_idx = claimed_dsts[child_key]
+                    child_dst = file_moves[child_idx][1]
+                    _retract(child_key)
+                    conflicts.append(
+                        (f"'{os.path.basename(child_src)}' was queued to move with "
+                         f"'{os.path.basename(prev_src)}', whose move was cancelled "
+                         "above -- left in place so it stays with its video",
+                         child_dst))
+            return False
 
         claimed_dsts[dst_key] = (src_path, len(file_moves))
         file_moves.append((src_path, dst_path, show_name))
+        if parent_video_key is not None:
+            video_children.setdefault(parent_video_key, []).append(dst_key)
+        return True
 
     # Build filename -> season lookup from tvshows.json
     # Key: (show_folder, filename) -> season_num
@@ -880,12 +913,21 @@ def _build_normalize_tv_plan(tv_root, data):
                     conflicts.append((f"File move conflict: target exists", dst_file))
                     continue
                 dst_key = os.path.normcase(os.path.normpath(dst_file))
-                _claim_destination(dst_key, src_file, dst_file, effective_folder,
-                                   show_path_effective)
+                video_claimed = _claim_destination(dst_key, src_file, dst_file,
+                                                   effective_folder, show_path_effective)
 
                 # Also move matching .srt subtitle files -- including
                 # language-tagged ones (episode.en.srt), via the same
                 # matcher find_external_subtitles uses for the index.
+                #
+                # Only if the video itself was actually claimed: if it just
+                # became a conflict, its subtitle must stay with it rather
+                # than moving off on its own. (A video claimed now can still
+                # be retracted later by a conflicting third file -- that path
+                # is handled inside _claim_destination via parent_video_key,
+                # which retracts this subtitle along with it when that happens.)
+                if not video_claimed:
+                    continue
                 stem = os.path.splitext(fname)[0]
                 for other_file in filenames:
                     if _subtitle_matches_video(other_file, stem):
@@ -904,7 +946,7 @@ def _build_normalize_tv_plan(tv_root, data):
                             continue
                         srt_key = os.path.normcase(os.path.normpath(srt_dst))
                         _claim_destination(srt_key, srt_src, srt_dst, effective_folder,
-                                           show_path_effective)
+                                           show_path_effective, parent_video_key=dst_key)
 
     return {
         'show_renames':   show_renames,
