@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Organise a Plex media library on disk: normalise filenames, build indexes, enrich movies from TMDB."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license-files = ["LICENSE", "THIRD-PARTY-LICENSES.md"]
 authors = [{ name = "khalathas" }]
 keywords = ["plex", "media", "library", "tmdb", "filename", "organiser"]
 classifiers = [
