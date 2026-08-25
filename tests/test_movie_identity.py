@@ -193,6 +193,39 @@ class TestAmbiguousMigrationSafety:
             "legacy entry was dropped despite an incomplete replacement set"
 
 
+class TestNormalizePreviewRecordsFullPaths:
+    """P3-3: the normalize preview must record each proposal's full path
+    key, not just its bare filename -- two files with the same basename in
+    different folders (the exact 'dupes' fixture scenario) otherwise
+    produce two indistinguishable "FROM:" lines, and the preview stops
+    being a real record of what happened to which file.
+    """
+
+    def test_preview_file_distinguishes_duplicate_basenames_by_folder(self, dupes):
+        cmd_normalize(Args(dry_run=True))
+
+        preview = (dupes["root"] / "normalize_preview.txt").read_text(encoding='utf-8')
+        assert "FROM: 4K/The.Matrix.1999.mkv" in preview, (
+            "preview does not record the full path for the 4K copy -- "
+            f"preview contents:\n{preview}"
+        )
+        assert "FROM: SD/The.Matrix.1999.mkv" in preview, (
+            "preview does not record the full path for the SD copy -- "
+            f"preview contents:\n{preview}"
+        )
+        # The old bug: both entries collapsed to one indistinguishable line.
+        assert preview.count("FROM: The.Matrix.1999.mkv\n") == 0, (
+            "preview still records a bare, ambiguous filename instead of "
+            "the full path"
+        )
+
+    def test_console_output_also_distinguishes_them(self, dupes, capsys):
+        cmd_normalize(Args(dry_run=True))
+        out = capsys.readouterr().out
+        assert "FROM: 4K/The.Matrix.1999.mkv" in out
+        assert "FROM: SD/The.Matrix.1999.mkv" in out
+
+
 class TestRenameSafety:
     def test_normalize_keeps_both_copies_and_flags_them(self, dupes):
         """Each file is its own entry, so each is renamed where it lives.

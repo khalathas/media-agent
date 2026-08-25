@@ -227,7 +227,11 @@ def cmd_normalize(args):
         rf.write("=" * 70 + "\n\n")
         for p in proposals:
             tag = "  [DUPLICATE]" if p.get('is_dupe') else ""
-            rf.write(f"FROM: {p['old']}\n")
+            # The full path key, not just the bare filename -- two files in
+            # different folders can share a basename (the DUPLICATE case
+            # right below is exactly that), and a preview that can't tell
+            # them apart isn't a real "map back" to what happened.
+            rf.write(f"FROM: {p['key']}\n")
             rf.write(f"  TO: {p['new']}{tag}\n\n")
 
     print(f"{len(proposals)} files could be renamed "
@@ -237,7 +241,7 @@ def cmd_normalize(args):
     # ── Console output ────────────────────────────────────────────────────────
     for p in proposals:
         tag = "  ** DUPLICATE **" if p.get('is_dupe') else ""
-        print(f"  FROM: {p['old']}")
+        print(f"  FROM: {p['key']}")
         print(f"    TO: {p['new']}{tag}")
         print()
 
@@ -270,7 +274,7 @@ def cmd_normalize(args):
             renamed += 1
             print(f"  OK: {p['new']}")
         except Exception as e:
-            print(f"  FAIL: {p['old']} -> {e}")
+            print(f"  FAIL: {p['key']} -> {e}")
             failed += 1
 
     if renamed:
