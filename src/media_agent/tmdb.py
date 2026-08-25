@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime
 
-from .config import TMDB_API_BASE, TMDB_TOKEN_ENV, get_config
+from .config import TMDB_API_BASE, TMDB_TOKEN_ENV, get_config, resolve_tmdb_token
 from .console import confirm
 from .index import load_movies_json, save_movies_json, write_json_atomic
 from .naming import _STRIP_RE, _YEAR_RE, _canonical_filename
@@ -19,8 +19,7 @@ _TMDB_ID_RE = re.compile(r'\{tmdb-(\d+)\}', re.IGNORECASE)
 
 
 def _get_tmdb_headers():
-    # Environment variable takes priority over config file
-    token = os.environ.get(TMDB_TOKEN_ENV, '').strip() or get_config().tmdb_token
+    token = resolve_tmdb_token()
 
     if not token:
         print("ERROR: No TMDB Read Access Token found.")

@@ -146,6 +146,95 @@ class TestTokenPlaceholders:
         assert Config.load(cfg_path).tmdb_token == "eyJhbGciOi.real.token"
 
 
+class TestResolveTmdbToken:
+    """P2-4: doctor and the tmdb-* commands used to resolve env-var-vs-config
+    precedence independently, and disagreed -- so `doctor` could validate a
+    token that wasn't the one actually used to call TMDB. Both now call
+    config.resolve_tmdb_token(), the single place that decides this.
+    """
+
+    def test_env_var_wins_over_config(self, tmp_path, library, monkeypatch):
+        cfg = Config.load(write_config(tmp_path / "c.json", library_root=str(library),
+                                       tmdb_read_access_token="config-token"))
+        monkeypatch.setenv("TMDB_TOKEN", "env-token")
+        assert config_mod.resolve_tmdb_token(cfg) == "env-token"
+
+    def test_config_used_when_no_env_var(self, tmp_path, library, monkeypatch):
+        cfg = Config.load(write_config(tmp_path / "c.json", library_root=str(library),
+                                       tmdb_read_access_token="config-token"))
+        monkeypatch.delenv("TMDB_TOKEN", raising=False)
+        assert config_mod.resolve_tmdb_token(cfg) == "config-token"
+
+    def test_blank_env_var_falls_back_to_config(self, tmp_path, library, monkeypatch):
+        cfg = Config.load(write_config(tmp_path / "c.json", library_root=str(library),
+                                       tmdb_read_access_token="config-token"))
+        monkeypatch.setenv("TMDB_TOKEN", "   ")
+        assert config_mod.resolve_tmdb_token(cfg) == "config-token"
+
+    def test_uses_active_singleton_when_no_cfg_given(self, tmp_path, library, monkeypatch):
+        cfg = Config.load(write_config(tmp_path / "c.json", library_root=str(library),
+                                       tmdb_read_access_token="config-token"))
+        monkeypatch.delenv("TMDB_TOKEN", raising=False)
+        config_mod.set_config(cfg)
+        try:
+            assert config_mod.resolve_tmdb_token() == "config-token"
+        finally:
+            config_mod.CONFIG = None
+
+
+class TestDoctorAndTmdbAgreeOnToken:
+    """The concrete reproduction of P2-4: set the config file and the env
+    var to two different tokens and confirm `doctor` validates the exact
+    same one the tmdb-* commands would actually send to the API.
+    """
+
+    class _FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def test_doctor_validates_the_token_tmdb_commands_actually_use(
+            self, tmp_path, library, monkeypatch):
+        from media_agent import doctor as doctor_mod
+        from media_agent import tmdb as tmdb_mod
+
+        cfg = Config.load(write_config(tmp_path / "c.json", library_root=str(library),
+                                       tmdb_read_access_token="config-token"))
+        config_mod.set_config(cfg)
+        monkeypatch.setenv("TMDB_TOKEN", "env-token")
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=10):
+            captured['header'] = req.get_header('Authorization')
+            return self._FakeResponse()
+
+        monkeypatch.setattr('media_agent.doctor.urllib.request.urlopen', fake_urlopen)
+
+        class Args:
+            pass
+
+        try:
+            doctor_mod.cmd_doctor(Args())
+        except SystemExit:
+            pass  # other checks (ffprobe, mutagen) may fail in a bare test env
+
+        try:
+            assert 'header' in captured, "doctor never attempted to validate a TMDB token"
+            doctor_used_token = captured['header']
+            tmdb_used_token = tmdb_mod._get_tmdb_headers()['Authorization']
+            assert doctor_used_token == tmdb_used_token == "Bearer env-token", (
+                "doctor and the tmdb-* commands resolved different tokens -- "
+                f"doctor used {doctor_used_token!r}, tmdb used {tmdb_used_token!r}"
+            )
+        finally:
+            config_mod.CONFIG = None
+
+
 class TestRuntimeSingleton:
     def test_get_before_set_raises_clearly(self, monkeypatch):
         monkeypatch.setattr(config_mod, 'CONFIG', None)

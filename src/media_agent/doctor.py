@@ -1,15 +1,17 @@
 """Commands: doctor, init."""
 
+import getpass
 import importlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .config import FFMPEG_HINT, get_config
+from .config import FFMPEG_HINT, get_config, resolve_tmdb_token
 
 
 _TMDB_TOKEN_HINT = """\
@@ -80,7 +82,7 @@ def cmd_doctor(args):
             print(f"  [!!] section/{key:<8}: NOT FOUND: {path}")
 
     # TMDB token
-    token = get_config().tmdb_token or os.environ.get('TMDB_TOKEN', '').strip()
+    token = resolve_tmdb_token()
     if not token:
         print("  [--] TMDB token  : not configured (tmdb-* commands will fail)")
         print()
@@ -118,6 +120,28 @@ def cmd_doctor(args):
 
 _SECTION_NAMES = ('Movies', 'TV Shows', 'Music')
 _VIDEO_HINT_EXTS = ('.mkv', '.mp4', '.avi', '.m4v', '.mov')
+
+
+def _restrict_config_permissions(path, *, platform_name=None):
+    """Best-effort: restrict a config file that now holds a credential to
+    owner read/write only.
+
+    POSIX only, via chmod. Windows has no direct equivalent -- NTFS ACLs are
+    a different model, and an icacls-based fix was judged not worth the
+    complexity for this release; on Windows this is left to the user's
+    account/disk protections instead.
+
+    `platform_name` defaults to os.name and only exists so tests can
+    exercise the POSIX branch without mutating the real os.name (which
+    pathlib itself reads, so flipping it globally breaks unrelated code on
+    whichever OS the tests actually run on).
+    """
+    if (platform_name if platform_name is not None else os.name) == 'nt':
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _confirm_library_root(root):
@@ -224,7 +248,15 @@ def cmd_init(args):
     print("Leave blank to skip; add it later via the config file or TMDB_TOKEN env var.")
     print("Get one free at: https://www.themoviedb.org/settings/api")
     try:
-        tmdb_token = input("TMDB Read Access Token: ").strip()
+        if sys.stdin.isatty():
+            # Hide the token as it's typed so it doesn't echo to the screen
+            # or end up in a terminal's scrollback/transcript.
+            tmdb_token = getpass.getpass("TMDB Read Access Token (input hidden): ").strip()
+        else:
+            # No real terminal to hide input on (piped stdin, some CI/test
+            # environments) -- getpass would only print a warning and echo
+            # anyway, so go straight to a plain prompt.
+            tmdb_token = input("TMDB Read Access Token: ").strip()
     except (EOFError, KeyboardInterrupt):
         tmdb_token = ''
 
@@ -242,6 +274,9 @@ def cmd_init(args):
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
         f.write('\n')
+
+    if tmdb_token:
+        _restrict_config_permissions(config_path)
 
     print()
     print(f"Config written to: {config_path}")

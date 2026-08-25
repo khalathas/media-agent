@@ -342,3 +342,22 @@ def get_config() -> Config:
             "this package as a library."
         )
     return CONFIG
+
+
+def resolve_tmdb_token(cfg: Optional[Config] = None) -> str:
+    """The one place that decides TMDB token precedence: env var, then config.
+
+    `doctor` and the tmdb-* commands used to each resolve this independently
+    and disagreed about which source won, so `doctor` could validate a
+    completely different credential than the one actually used to call
+    TMDB. Both now call this function instead of inlining the check.
+
+    The environment variable wins when set (documented in
+    docs/TROUBLESHOOTING.md), so a token can be swapped in for one run --
+    CI, testing, a shared machine -- without editing the config file on
+    disk.
+    """
+    env_token = os.environ.get(TMDB_TOKEN_ENV, '').strip()
+    if env_token:
+        return env_token
+    return (cfg or get_config()).tmdb_token
