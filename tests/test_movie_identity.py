@@ -107,6 +107,92 @@ class TestRescan:
         assert paths == {"4K/The.Matrix.1999.mkv", "SD/The.Matrix.1999.mkv"}
 
 
+class TestAmbiguousMigrationSafety:
+    """P2-2: an ambiguous legacy entry (pathless, basename shared by 2+ files)
+    must not be dropped from the index until its replacement(s) are
+    successfully probed and added. Otherwise the user's classification/
+    resolution history for that film silently vanishes -- no old entry, no
+    new one either.
+    """
+
+    def test_declining_probe_keeps_legacy_entry(self, dupes, monkeypatch):
+        (dupes["root"] / "movies.json").write_text(json.dumps({
+            "movies": [{"name": "The.Matrix.1999.mkv", "width": 1920, "height": 1080,
+                        "tmdb_id": 603}]
+        }), encoding='utf-8')
+
+        monkeypatch.setattr('media_agent.movies.confirm', lambda *a, **kw: False)
+        cmd_rescan(Args(yes=False))
+
+        data = json.loads((dupes["root"] / "movies.json").read_text(encoding='utf-8'))
+        assert len(data['movies']) == 1, \
+            "the only record of this film vanished with nothing to replace it"
+        assert data['movies'][0]['name'] == "The.Matrix.1999.mkv"
+        assert data['movies'][0].get('tmdb_id') == 603, "the old entry's data was lost"
+
+    def test_all_probes_failing_keeps_legacy_entry(self, dupes, monkeypatch):
+        (dupes["root"] / "movies.json").write_text(json.dumps({
+            "movies": [{"name": "The.Matrix.1999.mkv", "tmdb_id": 603}]
+        }), encoding='utf-8')
+
+        monkeypatch.setattr('media_agent.movies.get_media_info',
+                            lambda p: {'error': 'ffprobe not found'})
+        cmd_rescan(Args(yes=True))
+
+        data = json.loads((dupes["root"] / "movies.json").read_text(encoding='utf-8'))
+        assert len(data['movies']) == 1, \
+            "legacy entry was dropped even though no replacement was added"
+        assert data['movies'][0].get('tmdb_id') == 603
+
+    def test_successful_probe_of_both_copies_drops_legacy_entry(self, dupes, monkeypatch):
+        """The happy path: once every file sharing the ambiguous name has a
+        real per-path entry, the old unresolvable one is superseded."""
+        (dupes["root"] / "movies.json").write_text(json.dumps({
+            "movies": [{"name": "The.Matrix.1999.mkv", "tmdb_id": 603}]
+        }), encoding='utf-8')
+
+        monkeypatch.setattr('media_agent.movies.get_media_info',
+                            lambda p: {'name': 'x', 'width': 1920, 'height': 1080,
+                                       'extension': '.mkv', 'video_codec': 'h264',
+                                       'audio_codec': 'aac', 'bitrate': '1 kbps',
+                                       'has_subtitles': False, 'filesize': 1,
+                                       'date_added': '2026-01-01 00:00:00'})
+        cmd_rescan(Args(yes=True))
+
+        data = json.loads((dupes["root"] / "movies.json").read_text(encoding='utf-8'))
+        paths = {m.get('path') for m in data['movies']}
+        assert paths == {"4K/The.Matrix.1999.mkv", "SD/The.Matrix.1999.mkv"}
+        # The unresolvable legacy entry (no path, stale tmdb_id) is gone --
+        # both real files now have their own fresh, correct entry.
+        assert not any(m.get('tmdb_id') == 603 for m in data['movies'])
+
+    def test_partial_probe_failure_keeps_legacy_entry(self, dupes, monkeypatch):
+        """One of the two ambiguous files probes fine, the other fails.
+        Transactional: since the replacement set is incomplete, the legacy
+        entry must survive rather than being dropped for a half-finished
+        replacement.
+        """
+        (dupes["root"] / "movies.json").write_text(json.dumps({
+            "movies": [{"name": "The.Matrix.1999.mkv", "tmdb_id": 603}]
+        }), encoding='utf-8')
+
+        def flaky_probe(path):
+            if '4K' in path:
+                return {'name': 'x', 'width': 3840, 'height': 2160,
+                         'extension': '.mkv', 'video_codec': 'h264',
+                         'audio_codec': 'aac', 'bitrate': '1 kbps',
+                         'has_subtitles': False, 'filesize': 1,
+                         'date_added': '2026-01-01 00:00:00'}
+            return {'error': 'simulated probe failure'}
+
+        monkeypatch.setattr('media_agent.movies.get_media_info', flaky_probe)
+        cmd_rescan(Args(yes=True))
+
+        data = json.loads((dupes["root"] / "movies.json").read_text(encoding='utf-8'))
+        assert any(m.get('tmdb_id') == 603 for m in data['movies']), \
+            "legacy entry was dropped despite an incomplete replacement set"
+
+
 class TestRenameSafety:
     def test_normalize_keeps_both_copies_and_flags_them(self, dupes):
         """Each file is its own entry, so each is renamed where it lives.

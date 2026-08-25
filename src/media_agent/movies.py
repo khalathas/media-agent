@@ -51,6 +51,7 @@ def cmd_rescan(args):
     print(f"  {len(data['movies'])} entries in movies.json")
 
     migrated, ambiguous = migrate_index_paths(data['movies'], disk_files)
+    by_name = group_by_basename(disk_files)
     if migrated:
         print(f"  {migrated} existing entries matched to their file on disk.")
     if ambiguous:
@@ -58,11 +59,20 @@ def cmd_rescan(args):
         print("  Which file each entry described cannot be recovered, so they will be")
         print("  re-indexed per file. Review these — they are often true duplicates:")
         for name in ambiguous:
-            for key in group_by_basename(disk_files)[name]:
+            for key in by_name[name]:
                 print(f"    {key}")
+        print("  The legacy entry for each is kept until every file sharing its name")
+        print("  has been freshly probed and added -- if you decline, or a probe")
+        print("  fails, nothing is lost.")
 
-    # Entries that never got a path are the ambiguous ones; drop them so each
-    # real file is re-indexed under its own path rather than sharing one entry.
+    # Entries that never got a path are the ambiguous ones. Set them aside
+    # rather than dropping them outright: each is only removed once every
+    # file sharing its name has actually been re-probed and added below, so
+    # a decline or a failed probe leaves the old entry in place instead of
+    # discarding the user's classification/resolution history for nothing.
+    ambiguous_names = set(ambiguous)
+    pending_legacy = [m for m in data['movies']
+                      if not m.get('path') and m['name'] in ambiguous_names]
     data['movies'] = [m for m in data['movies'] if m.get('path')]
     index_by_path = {m['path']: m for m in data['movies']}
 
@@ -74,7 +84,7 @@ def cmd_rescan(args):
     print(f"\n  New (on disk, not indexed): {len(new_files)}")
     print(f"  Stale (in index, not on disk): {len(stale)}")
 
-    if not new_files and not stale:
+    if not new_files and not stale and not pending_legacy:
         print("\nIndex is already up to date.")
         if migrated:
             save_movies_json(data)
@@ -122,9 +132,33 @@ def cmd_rescan(args):
         else:
             print("  Skipped.")
 
+    # ── Reconcile ambiguous legacy entries ────────────────────────────────────
+    # Only now do we know whether every file sharing an ambiguous name got a
+    # fresh per-path entry above. Where it did, the old unresolvable entry is
+    # superseded. Where it didn't (declined, or a probe failed), put it back
+    # rather than let it stay dropped with nothing to replace it.
+    if pending_legacy:
+        current_paths = {m['path'] for m in data['movies'] if m.get('path')}
+        by_pending_name = {}
+        for m in pending_legacy:
+            by_pending_name.setdefault(m['name'], []).append(m)
+        restored = 0
+        for name, entries in by_pending_name.items():
+            candidates = set(by_name.get(name, []))
+            if candidates and candidates.issubset(current_paths):
+                continue  # fully replaced -- old entry not needed
+            data['movies'].extend(entries)
+            restored += len(entries)
+        if restored:
+            print(f"\n  Kept {restored} legacy entr{'y' if restored == 1 else 'ies'} "
+                  f"whose replacement could not be completed.")
+        changed = True
+
     # ── Save movies.json ──────────────────────────────────────────────────────
     if changed:
-        data['movies'].sort(key=lambda m: m['path'].lower())
+        # A restored legacy entry has no 'path' -- fall back to 'name' so it
+        # still sorts instead of crashing.
+        data['movies'].sort(key=lambda m: (m.get('path') or m['name']).lower())
         save_movies_json(data)
         print(f"\nmovies.json saved: {len(data['movies'])} entries total.")
 
