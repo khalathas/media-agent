@@ -6,15 +6,27 @@
 #   Debian/Ubuntu sudo apt install ffmpeg
 #   Fedora        sudo dnf install ffmpeg
 #
-# This script is a fallback for systems without one. Be aware that its Linux
-# fallback path DOWNLOADS A BINARY OVER THE NETWORK AND RUNS IT, without
-# pinning a version or verifying a checksum or signature. That means you are
-# trusting the upstream host and your network path at the moment you run it.
-# A package manager verifies signatures for you, which is why it is preferred.
+# This script is a fallback for systems without one. Its Linux fallback path
+# downloads a static build from johnvansickle.com. Unlike the previous
+# version of this script, the download is now:
+#   - pinned to a specific, known-good release (not a "latest" alias that
+#     can change underneath us),
+#   - verified against a checksum hardcoded below before anything is
+#     extracted or executed,
+#   - checked for path-traversal / absolute-path archive members before
+#     extraction.
+#
+# johnvansickle.com only publishes MD5 checksums (no SHA-256/signature is
+# offered for these builds) — see release-readme.txt on that site. MD5 is
+# not collision-resistant against a determined adversary, but it does catch
+# the realistic threats here: a corrupted download, or the upstream file
+# changing out from under a pinned URL. It is verified below; do not treat
+# this comment as an invitation to skip verification because "it's only
+# MD5" — no verification is strictly worse.
 #
 # Checks if ffprobe is already on PATH first. If so, no action is needed.
-# Otherwise tries the system package manager, then falls back to a static
-# build for Linux.
+# Otherwise tries the system package manager, then falls back to the pinned
+# static build for Linux.
 #
 # Does NOT modify media_agent_config.json. Runtime discovery handles
 # vendor/ffmpeg/ automatically (PATH -> config.ffprobe_path -> vendor/ffmpeg/).
@@ -24,102 +36,212 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/vendor/ffmpeg"
 
-# 1. Check PATH first — don't create a duplicate install
-if command -v ffprobe >/dev/null 2>&1; then
-    echo "ffprobe already available at: $(command -v ffprobe)"
-    echo "No install needed — media-agent will detect it automatically."
-    exit 0
-fi
+# Pinned release. Bump these together (version, per-arch MD5) after manually
+# downloading the new build from https://johnvansickle.com/ffmpeg/ and
+# computing its md5sum — do not paste in a hash you haven't verified
+# yourself against a real download.
+FFMPEG_STATIC_VERSION="7.0.2"
+FFMPEG_STATIC_MD5_AMD64="7fa72b652e19bf84c9461e332ea1cdf3"
+FFMPEG_STATIC_MD5_ARM64="807afe21601db0a73e426121c7d636ea"
+FFMPEG_STATIC_MD5_ARMHF="bd0c3d4821a5ddce1a4339cd00031e38"
 
-# 2. Check if vendor install already exists
-if [ -f "$VENDOR_DIR/bin/ffprobe" ]; then
-    echo "ffprobe already installed in vendor/ffmpeg/: $VENDOR_DIR/bin/ffprobe"
-    echo "No install needed."
-    exit 0
-fi
-
-echo "ffprobe not found on PATH. Attempting install ..."
-
-OS="$(uname -s)"
-
-# 3. Try system package manager
-if [ "$OS" = "Darwin" ]; then
-    if command -v brew >/dev/null 2>&1; then
-        echo "macOS detected — installing via Homebrew ..."
-        brew install ffmpeg
-        echo "Installed. media-agent will detect ffprobe on PATH automatically."
-        exit 0
+# Computes an md5 checksum for $1 using whatever md5 tool is available.
+# Prints the checksum to stdout; returns non-zero if no tool is available.
+compute_md5() {
+    local file="$1"
+    if command -v md5sum >/dev/null 2>&1; then
+        md5sum "$file" | awk '{print $1}'
+    elif command -v md5 >/dev/null 2>&1; then
+        # BSD/macOS md5
+        md5 -q "$file"
     else
-        echo "Homebrew not found. Install Homebrew first: https://brew.sh"
-        echo "Then re-run this script."
-        exit 1
+        return 1
     fi
+}
+
+# Verifies that $1 (a file path) has md5 checksum $2. Prints a diagnostic
+# and returns non-zero on any failure, including "no md5 tool available" —
+# callers must treat that as "verification failed", not "skip verification".
+verify_checksum() {
+    local file="$1" expected="$2" actual
+    if ! actual="$(compute_md5 "$file")"; then
+        echo "ERROR: no md5sum/md5 utility found — cannot verify download integrity." >&2
+        echo "Refusing to proceed without checksum verification." >&2
+        return 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: checksum mismatch for $file" >&2
+        echo "  expected: $expected" >&2
+        echo "  actual  : $actual" >&2
+        echo "The downloaded file does not match the pinned checksum. It will" >&2
+        echo "NOT be extracted or executed. This can mean the download was" >&2
+        echo "corrupted, or that the upstream file changed — either way, do not" >&2
+        echo "bypass this check." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Lists the members of tar archive $1 and rejects any that are absolute
+# paths or contain a ".." path segment, which could otherwise be used to
+# write outside the extraction directory. Returns non-zero if any unsafe
+# member is found, or if the archive can't be listed at all.
+check_archive_paths() {
+    local archive="$1" member seg unsafe=0
+    local listing
+    # --force-local: a colon in $archive (e.g. a Windows-style "C:/..." path,
+    # as can appear when this is exercised under Git Bash) would otherwise
+    # be parsed by GNU tar as a "host:path" remote archive spec.
+    if ! listing="$(tar --force-local -tf "$archive" 2>/dev/null)"; then
+        echo "ERROR: could not list archive contents: $archive" >&2
+        return 1
+    fi
+    while IFS= read -r member; do
+        [ -z "$member" ] && continue
+        case "$member" in
+            /*)
+                echo "ERROR: archive member has an absolute path: $member" >&2
+                unsafe=1
+                continue
+                ;;
+        esac
+        local saved_ifs="$IFS"
+        IFS='/'
+        # shellcheck disable=SC2086
+        set -- $member
+        IFS="$saved_ifs"
+        for seg in "$@"; do
+            if [ "$seg" = ".." ]; then
+                echo "ERROR: archive member escapes the target directory: $member" >&2
+                unsafe=1
+            fi
+        done
+    done <<EOF
+$listing
+EOF
+    [ "$unsafe" -eq 0 ]
+}
+
+main() {
+    # 1. Check PATH first — don't create a duplicate install
+    if command -v ffprobe >/dev/null 2>&1; then
+        echo "ffprobe already available at: $(command -v ffprobe)"
+        echo "No install needed — media-agent will detect it automatically."
+        return 0
+    fi
+
+    # 2. Check if vendor install already exists
+    if [ -f "$VENDOR_DIR/bin/ffprobe" ]; then
+        echo "ffprobe already installed in vendor/ffmpeg/: $VENDOR_DIR/bin/ffprobe"
+        echo "No install needed."
+        return 0
+    fi
+
+    echo "ffprobe not found on PATH. Attempting install ..."
+
+    local os
+    os="$(uname -s)"
+
+    # 3. Try system package manager
+    if [ "$os" = "Darwin" ]; then
+        if command -v brew >/dev/null 2>&1; then
+            echo "macOS detected — installing via Homebrew ..."
+            brew install ffmpeg
+            echo "Installed. media-agent will detect ffprobe on PATH automatically."
+            return 0
+        else
+            echo "Homebrew not found. Install Homebrew first: https://brew.sh"
+            echo "Then re-run this script."
+            return 1
+        fi
+    fi
+
+    # Linux — try package managers in order
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Debian/Ubuntu detected — installing via apt ..."
+        sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+        echo "Installed. media-agent will detect ffprobe on PATH automatically."
+        return 0
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Fedora/RHEL detected — installing via dnf ..."
+        sudo dnf install -y ffmpeg
+        echo "Installed. media-agent will detect ffprobe on PATH automatically."
+        return 0
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Arch Linux detected — installing via pacman ..."
+        sudo pacman -Sy --noconfirm ffmpeg
+        echo "Installed. media-agent will detect ffprobe on PATH automatically."
+        return 0
+    fi
+
+    # 4. Linux fallback: pinned johnvansickle.com static build
+    echo "No supported package manager found. Falling back to static build ..."
+
+    local arch arch_tag expected_md5
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch_tag="amd64"; expected_md5="$FFMPEG_STATIC_MD5_AMD64" ;;
+        aarch64) arch_tag="arm64"; expected_md5="$FFMPEG_STATIC_MD5_ARM64" ;;
+        armv7l)  arch_tag="armhf"; expected_md5="$FFMPEG_STATIC_MD5_ARMHF" ;;
+        *)
+            echo "Unsupported architecture: $arch"
+            echo "Download a static build manually from https://johnvansickle.com/ffmpeg/"
+            echo "and set ffprobe_path in media_agent_config.json."
+            return 1
+            ;;
+    esac
+
+    local static_url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-${FFMPEG_STATIC_VERSION}-${arch_tag}-static.tar.xz"
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" EXIT
+
+    echo "Downloading $static_url ..."
+    curl -L --progress-bar -o "$tmp_dir/ffmpeg.tar.xz" "$static_url"
+
+    echo "Verifying checksum ..."
+    if ! verify_checksum "$tmp_dir/ffmpeg.tar.xz" "$expected_md5"; then
+        return 1
+    fi
+    echo "Checksum OK."
+
+    echo "Checking archive contents for unsafe paths ..."
+    if ! check_archive_paths "$tmp_dir/ffmpeg.tar.xz"; then
+        echo "Refusing to extract an archive with unsafe member paths." >&2
+        return 1
+    fi
+
+    echo "Extracting ..."
+    tar --force-local -xJf "$tmp_dir/ffmpeg.tar.xz" -C "$tmp_dir"
+
+    local top_level
+    top_level="$(find "$tmp_dir" -maxdepth 1 -mindepth 1 -type d | head -1)"
+    if [ -z "$top_level" ]; then
+        echo "Unexpected archive structure — no top-level directory found."
+        return 1
+    fi
+
+    echo "Installing to $VENDOR_DIR ..."
+    mkdir -p "$VENDOR_DIR/bin"
+    cp "$top_level/ffprobe" "$VENDOR_DIR/bin/ffprobe"
+    chmod +x "$VENDOR_DIR/bin/ffprobe"
+    # Copy ffmpeg too if present (not required by media-agent, but useful to have)
+    if [ -f "$top_level/ffmpeg" ]; then
+        cp "$top_level/ffmpeg" "$VENDOR_DIR/bin/ffmpeg"
+        chmod +x "$VENDOR_DIR/bin/ffmpeg"
+    fi
+
+    local version
+    version="$("$VENDOR_DIR/bin/ffprobe" -version 2>&1 | head -1)"
+    echo "Installed: $version"
+    echo "Location : $VENDOR_DIR/bin/ffprobe"
+    echo ""
+    echo "media-agent will detect vendor/ffmpeg/ automatically. No config changes needed."
+}
+
+# Allow this script to be sourced (e.g. by tests) without running main —
+# only run it when executed directly.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+    main "$@"
 fi
-
-# Linux — try package managers in order
-if command -v apt-get >/dev/null 2>&1; then
-    echo "Debian/Ubuntu detected — installing via apt ..."
-    sudo apt-get update -qq && sudo apt-get install -y ffmpeg
-    echo "Installed. media-agent will detect ffprobe on PATH automatically."
-    exit 0
-elif command -v dnf >/dev/null 2>&1; then
-    echo "Fedora/RHEL detected — installing via dnf ..."
-    sudo dnf install -y ffmpeg
-    echo "Installed. media-agent will detect ffprobe on PATH automatically."
-    exit 0
-elif command -v pacman >/dev/null 2>&1; then
-    echo "Arch Linux detected — installing via pacman ..."
-    sudo pacman -Sy --noconfirm ffmpeg
-    echo "Installed. media-agent will detect ffprobe on PATH automatically."
-    exit 0
-fi
-
-# 4. Linux fallback: johnvansickle.com static build
-echo "No supported package manager found. Falling back to static build ..."
-
-ARCH="$(uname -m)"
-case "$ARCH" in
-    x86_64)  ARCH_TAG="amd64" ;;
-    aarch64) ARCH_TAG="arm64" ;;
-    armv7l)  ARCH_TAG="armhf" ;;
-    *)
-        echo "Unsupported architecture: $ARCH"
-        echo "Download a static build manually from https://johnvansickle.com/ffmpeg/"
-        echo "and set ffprobe_path in media_agent_config.json."
-        exit 1
-        ;;
-esac
-
-STATIC_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH_TAG}-static.tar.xz"
-TMP_DIR="$(mktemp -d)"
-
-cleanup() { rm -rf "$TMP_DIR"; }
-trap cleanup EXIT
-
-echo "Downloading $STATIC_URL ..."
-curl -L --progress-bar -o "$TMP_DIR/ffmpeg.tar.xz" "$STATIC_URL"
-
-echo "Extracting ..."
-tar -xJf "$TMP_DIR/ffmpeg.tar.xz" -C "$TMP_DIR"
-
-TOP_LEVEL="$(find "$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -1)"
-if [ -z "$TOP_LEVEL" ]; then
-    echo "Unexpected archive structure — no top-level directory found."
-    exit 1
-fi
-
-echo "Installing to $VENDOR_DIR ..."
-mkdir -p "$VENDOR_DIR/bin"
-cp "$TOP_LEVEL/ffprobe" "$VENDOR_DIR/bin/ffprobe"
-chmod +x "$VENDOR_DIR/bin/ffprobe"
-# Copy ffmpeg too if present (not required by media-agent, but useful to have)
-if [ -f "$TOP_LEVEL/ffmpeg" ]; then
-    cp "$TOP_LEVEL/ffmpeg" "$VENDOR_DIR/bin/ffmpeg"
-    chmod +x "$VENDOR_DIR/bin/ffmpeg"
-fi
-
-VERSION="$("$VENDOR_DIR/bin/ffprobe" -version 2>&1 | head -1)"
-echo "Installed: $VERSION"
-echo "Location : $VENDOR_DIR/bin/ffprobe"
-echo ""
-echo "media-agent will detect vendor/ffmpeg/ automatically. No config changes needed."
