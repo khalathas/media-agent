@@ -387,3 +387,123 @@ class TestConflictingSubtitleCancelsAllDependentVideos:
         assert (show / "alt" / "S01E01.avi").exists()
         assert (show / "S01E01.srt").exists(), "root subtitle moved despite the conflict"
         assert (show / "alt" / "S01E01.srt").exists(), "alt subtitle moved despite the conflict"
+
+
+@pytest.fixture
+def subtitle_already_at_destination(tmp_path):
+    """The subtitle's target already has a file sitting there -- left over
+    from an earlier run, most likely -- while the video itself has a clear
+    path. Found by the sixth-pass reviewer: this on-disk check predates all
+    three planned-collision fixes and never touched the video's own claim,
+    so the video moved alone while its subtitle was left behind.
+    """
+    root = tmp_path / "Library"
+    show = root / "TV Shows" / "Show (2020)"
+    (root / "Movies").mkdir(parents=True)
+    (root / "Music").mkdir()
+    (show / "loose").mkdir(parents=True)
+    (show / "Season 01").mkdir()
+
+    (show / "loose" / "S01E01.mkv").write_bytes(b"the mkv")
+    (show / "loose" / "S01E01.srt").write_bytes(b"loose subs")
+    (show / "Season 01" / "S01E01.srt").write_bytes(b"pre-existing, unrelated")
+
+    (root / "tvshows.json").write_text(json.dumps({
+        "shows": [{"name": "Show", "year": "2020", "folder": "Show (2020)",
+                   "seasons": [{"season": 1, "episodes": [
+                       {"filename": "S01E01.mkv", "season": 1, "episode": 1},
+                   ]}]}]
+    }), encoding='utf-8')
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
+    config_mod.set_config(Config.load(cfg_path))
+    yield {"root": root, "show": show}
+    config_mod.CONFIG = None
+
+
+class TestVideoRetractedWhenSubtitleDestinationAlreadyExists:
+    """A pre-existing file at the subtitle's destination is a conflict, and
+    like every other conflict in this planner, it must cancel the whole
+    episode group -- not just report itself and let the video move alone.
+    """
+
+    def test_plan_moves_nothing(self, subtitle_already_at_destination):
+        data = json.loads(
+            (subtitle_already_at_destination["root"] / "tvshows.json")
+            .read_text(encoding='utf-8'))
+        plan = _build_normalize_tv_plan(
+            str(subtitle_already_at_destination["root"] / "TV Shows"), data)
+
+        assert plan['file_moves'] == [], (
+            f"expected the video to be cancelled too, got {plan['file_moves']}"
+        )
+
+    def test_apply_leaves_everything_exactly_where_it_was(
+            self, subtitle_already_at_destination):
+        cmd_normalize_tv(Args(apply=True))
+
+        show = subtitle_already_at_destination["show"]
+        assert not (show / "Season 01" / "S01E01.mkv").exists(), (
+            "video moved even though its subtitle's destination was blocked"
+        )
+        assert (show / "loose" / "S01E01.mkv").exists()
+        assert (show / "loose" / "S01E01.srt").exists()
+        # The pre-existing file at the destination must be untouched, not
+        # overwritten and not deleted.
+        pre_existing = show / "Season 01" / "S01E01.srt"
+        assert pre_existing.exists()
+        assert pre_existing.read_bytes() == b"pre-existing, unrelated"
+
+
+@pytest.fixture
+def video_with_two_subtitles_first_blocked(tmp_path):
+    """One video with TWO subtitle matches (plain + language-tagged). The
+    first one found (alphabetically, .en.srt before .srt) collides with a
+    pre-existing file and retracts the video -- the second must not still
+    be claimed on behalf of a parent that no longer exists.
+    """
+    root = tmp_path / "Library"
+    show = root / "TV Shows" / "Show (2020)"
+    (root / "Movies").mkdir(parents=True)
+    (root / "Music").mkdir()
+    (show / "loose").mkdir(parents=True)
+    (show / "Season 01").mkdir()
+
+    (show / "loose" / "S01E01.mkv").write_bytes(b"the mkv")
+    (show / "loose" / "S01E01.en.srt").write_bytes(b"english subs")
+    (show / "loose" / "S01E01.srt").write_bytes(b"plain subs")
+    (show / "Season 01" / "S01E01.en.srt").write_bytes(b"pre-existing english")
+
+    (root / "tvshows.json").write_text(json.dumps({
+        "shows": [{"name": "Show", "year": "2020", "folder": "Show (2020)",
+                   "seasons": [{"season": 1, "episodes": [
+                       {"filename": "S01E01.mkv", "season": 1, "episode": 1},
+                   ]}]}]
+    }), encoding='utf-8')
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
+    config_mod.set_config(Config.load(cfg_path))
+    yield {"root": root, "show": show}
+    config_mod.CONFIG = None
+
+
+class TestSecondSubtitleNotClaimedForAnAlreadyDeadVideo:
+    """Once a video is retracted mid-loop, no further subtitle on its behalf
+    should be claimed at all -- a child registered against a parent that's
+    already gone would never be cleaned up by the normal cascade.
+    """
+
+    def test_neither_subtitle_moves_and_video_stays_put(
+            self, video_with_two_subtitles_first_blocked):
+        cmd_normalize_tv(Args(apply=True))
+
+        show = video_with_two_subtitles_first_blocked["show"]
+        assert not (show / "Season 01" / "S01E01.mkv").exists()
+        assert (show / "loose" / "S01E01.mkv").exists()
+        assert (show / "loose" / "S01E01.en.srt").exists()
+        assert (show / "loose" / "S01E01.srt").exists(), (
+            "the second subtitle was left dangling -- claimed on behalf of "
+            "a video that had already been retracted"
+        )

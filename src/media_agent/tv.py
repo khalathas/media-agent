@@ -647,6 +647,78 @@ def _build_normalize_tv_plan(tv_root, data):
     video_children = {}   # video dst_key -> {child dst_key, ...} claimed for it
     child_parents  = {}   # child dst_key -> {parent video dst_key, ...} still live
 
+    # These retraction helpers are shared by _claim_destination (below, for
+    # conflicts between two PLANNED moves) and by the on-disk-exists checks
+    # inlined further down in this function (for a planned move colliding
+    # with a file that is already sitting at the destination from an earlier
+    # run). Both are genuine conflicts and both must cascade the same way --
+    # they were originally nested inside _claim_destination alone, which is
+    # exactly how the on-disk case fell through the cracks the first time:
+    # that check could report a subtitle conflict but had no way to reach
+    # the retraction logic to also cancel the subtitle's parent video.
+    def _where(pth, root_for_display):
+        rel = os.path.relpath(pth, root_for_display)
+        parent = os.path.dirname(rel)
+        return parent.replace(os.sep, '/') if parent else '(show root)'
+
+    def _pop_claim(key):
+        """Pull an already-queued claim back out and poison its key.
+        Returns (src_path, dst_path) of what was retracted."""
+        src, idx = claimed_dsts.pop(key)
+        dst = file_moves[idx][1]
+        file_moves[idx] = None
+        poisoned_dsts.add(key)
+        return src, dst
+
+    def _cascade_message(retracted_src, retracted_dst, cause_src, root_for_display):
+        # Name both files by location, not just basename -- a cascade
+        # through a shared subtitle very often involves two files that
+        # share their exact filename (S01E01.srt in two folders), so the
+        # basename alone can't tell the reader which is which.
+        conflicts.append(
+            (f"'{os.path.basename(retracted_src)}' in "
+             f"{_where(retracted_src, root_for_display)} was queued to move as "
+             "part of the same episode as "
+             f"'{os.path.basename(cause_src)}' in {_where(cause_src, root_for_display)}, "
+             "whose move was cancelled by a conflict above -- left in place "
+             "so the episode's files move together or not at all",
+             retracted_dst))
+
+    def _retract_video(video_key, root_for_display, cause_src=None):
+        """Retract a video's claim, and its subtitle claims IF this was
+        each one's last live parent."""
+        if video_key not in claimed_dsts:
+            return
+        v_src, v_dst = _pop_claim(video_key)
+        if cause_src is not None:
+            _cascade_message(v_src, v_dst, cause_src, root_for_display)
+        for child_key in video_children.pop(video_key, ()):
+            parents = child_parents.get(child_key)
+            if parents is None:
+                continue
+            parents.discard(video_key)
+            if not parents and child_key in claimed_dsts:
+                _retract_child(child_key, root_for_display, cause_src=v_src)
+
+    def _retract_child(child_key, root_for_display, cause_src=None):
+        """Retract a subtitle's claim, and EVERY video depending on it --
+        unconditionally, unlike the video direction above. A subtitle
+        that cannot be placed strands all of its parents, not just one."""
+        if child_key not in claimed_dsts:
+            return
+        c_src, c_dst = _pop_claim(child_key)
+        if cause_src is not None:
+            _cascade_message(c_src, c_dst, cause_src, root_for_display)
+        for parent_key in child_parents.pop(child_key, ()):
+            _retract_video(parent_key, root_for_display, cause_src=c_src)
+
+    def _retract(key, root_for_display, cause_src=None):
+        """Retract whichever kind of claim `key` turns out to be."""
+        if key in child_parents:
+            _retract_child(key, root_for_display, cause_src=cause_src)
+        else:
+            _retract_video(key, root_for_display, cause_src=cause_src)
+
     def _claim_destination(dst_key, src_path, dst_path, show_name, root_for_display,
                            parent_video_key=None):
         """Queue a move, or turn it into a conflict if something else wants it too.
@@ -671,97 +743,23 @@ def _build_normalize_tv_plan(tv_root, data):
         parent_video_key, when given, records this claim (typically a
         subtitle) as belonging to a video's claim. Retraction is bidirectional
         and asymmetric between the two directions, matching how each kind of
-        file actually depends on the other:
-
-        - Retracting a VIDEO retracts each of its subtitle claims only once
-          EVERY parent that claimed that subtitle has been retracted -- a
-          subtitle shared by two videos survives as long as at least one of
-          them is still moving; it has a destination regardless of which
-          video it travels with.
-        - Retracting a SUBTITLE (because a genuinely different subtitle file
-          collides with it -- two different .srt files landing on the same
-          target, not the same one claimed twice) retracts EVERY video that
-          depends on it, unconditionally. A subtitle that cannot be placed at
-          all stops being anyone's companion; there is no "surviving parent"
-          case here, unlike the video-retraction direction.
-
-        Returns True if the claim succeeded (fresh or idempotent), False if it
-        became a conflict.
+        file actually depends on the other -- see _retract_video and
+        _retract_child above. Returns True if the claim succeeded (fresh or
+        idempotent), False if it became a conflict.
         """
-        def _where(pth):
-            rel = os.path.relpath(pth, root_for_display)
-            parent = os.path.dirname(rel)
-            return parent.replace(os.sep, '/') if parent else '(show root)'
-
         def _same_file(a, b):
             return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
-
-        def _pop_claim(key):
-            """Pull an already-queued claim back out and poison its key.
-            Returns (src_path, dst_path) of what was retracted."""
-            src, idx = claimed_dsts.pop(key)
-            dst = file_moves[idx][1]
-            file_moves[idx] = None
-            poisoned_dsts.add(key)
-            return src, dst
-
-        def _cascade_message(retracted_src, retracted_dst, cause_src):
-            # Name both files by location, not just basename -- a cascade
-            # through a shared subtitle very often involves two files that
-            # share their exact filename (S01E01.srt in two folders), so the
-            # basename alone can't tell the reader which is which.
-            conflicts.append(
-                (f"'{os.path.basename(retracted_src)}' in {_where(retracted_src)} "
-                 "was queued to move as part of the same episode as "
-                 f"'{os.path.basename(cause_src)}' in {_where(cause_src)}, whose "
-                 "move was cancelled by a conflict above -- left in place so "
-                 "the episode's files move together or not at all",
-                 retracted_dst))
-
-        def _retract_video(video_key, cause_src=None):
-            """Retract a video's claim, and its subtitle claims IF this was
-            each one's last live parent."""
-            if video_key not in claimed_dsts:
-                return
-            v_src, v_dst = _pop_claim(video_key)
-            if cause_src is not None:
-                _cascade_message(v_src, v_dst, cause_src)
-            for child_key in video_children.pop(video_key, ()):
-                parents = child_parents.get(child_key)
-                if parents is None:
-                    continue
-                parents.discard(video_key)
-                if not parents and child_key in claimed_dsts:
-                    _retract_child(child_key, cause_src=v_src)
-
-        def _retract_child(child_key, cause_src=None):
-            """Retract a subtitle's claim, and EVERY video depending on it --
-            unconditionally, unlike the video direction above. A subtitle
-            that cannot be placed strands all of its parents, not just one."""
-            if child_key not in claimed_dsts:
-                return
-            c_src, c_dst = _pop_claim(child_key)
-            if cause_src is not None:
-                _cascade_message(c_src, c_dst, cause_src)
-            for parent_key in child_parents.pop(child_key, ()):
-                _retract_video(parent_key, cause_src=c_src)
-
-        def _retract(key, cause_src=None):
-            """Retract whichever kind of claim `key` turns out to be."""
-            if key in child_parents:
-                _retract_child(key, cause_src=cause_src)
-            else:
-                _retract_video(key, cause_src=cause_src)
 
         if dst_key in poisoned_dsts:
             conflicts.append(
                 ("Two files claim the same target — keeping both, moving "
-                 f"neither. '{os.path.basename(src_path)}' in {_where(src_path)} "
-                 "also wants this target; move or rename it by hand", dst_path))
+                 f"neither. '{os.path.basename(src_path)}' in "
+                 f"{_where(src_path, root_for_display)} also wants this "
+                 "target; move or rename it by hand", dst_path))
             # This claimant's own video (if it has one) is also going to lose
             # its subtitle -- retract it too rather than let it move alone.
             if parent_video_key is not None:
-                _retract(parent_video_key, cause_src=src_path)
+                _retract(parent_video_key, root_for_display, cause_src=src_path)
             return False
 
         if dst_key in claimed_dsts:
@@ -779,13 +777,14 @@ def _build_normalize_tv_plan(tv_root, data):
             conflicts.append(
                 ("Two files claim the same target — keeping both, moving "
                  f"neither. '{os.path.basename(src_path)}' exists in "
-                 f"{_where(prev_src)} and {_where(src_path)}; "
+                 f"{_where(prev_src, root_for_display)} and "
+                 f"{_where(src_path, root_for_display)}; "
                  "move or rename one by hand", dst_path))
-            _retract(dst_key, cause_src=src_path)
+            _retract(dst_key, root_for_display, cause_src=src_path)
             # As above: this claimant's own video, if any, loses its subtitle
             # too and must not move alone.
             if parent_video_key is not None:
-                _retract(parent_video_key, cause_src=prev_src)
+                _retract(parent_video_key, root_for_display, cause_src=prev_src)
             return False
 
         claimed_dsts[dst_key] = (src_path, len(file_moves))
@@ -1013,6 +1012,16 @@ def _build_normalize_tv_plan(tv_root, data):
                     continue
                 stem = os.path.splitext(fname)[0]
                 for other_file in filenames:
+                    # A video can have more than one subtitle match (a plain
+                    # .srt and a language-tagged .en.srt for the same
+                    # episode, say). If an earlier iteration already
+                    # retracted this video -- an on-disk collision below, or
+                    # a genuine conflict inside _claim_destination -- stop
+                    # attempting further subtitle claims on its behalf rather
+                    # than registering a child whose parent is already dead
+                    # and will never get cleaned up by the normal cascade.
+                    if dst_key not in claimed_dsts:
+                        break
                     if _subtitle_matches_video(other_file, stem):
                         srt_src = os.path.join(show_path_effective,
                                                rel_dir if rel_dir else '',
@@ -1023,9 +1032,19 @@ def _build_normalize_tv_plan(tv_root, data):
                         if srt_src == srt_dst:
                             continue
                         if os.path.exists(srt_dst):
+                            # A file is already sitting at the destination --
+                            # left over from an earlier run, most likely.
+                            # This video's own claim must be retracted too:
+                            # without its subtitle, it shouldn't move alone
+                            # any more than the two-planned-subtitles case
+                            # above allows it to.
                             conflicts.append(
-                                ('Subtitle move conflict: target already exists',
-                                 srt_dst))
+                                (f"Subtitle move conflict: target already "
+                                 f"exists at {srt_dst} -- '{other_file}' in "
+                                 f"{_where(srt_src, show_path_effective)} was "
+                                 "left in place, and its video was cancelled "
+                                 "with it", srt_dst))
+                            _retract(dst_key, show_path_effective, cause_src=srt_src)
                             continue
                         srt_key = os.path.normcase(os.path.normpath(srt_dst))
                         _claim_destination(srt_key, srt_src, srt_dst, effective_folder,
