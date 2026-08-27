@@ -71,6 +71,43 @@ def tmdb_library(tmp_path):
     config_mod.CONFIG = None
 
 
+@pytest.fixture
+def tmdb_collision_library(tmp_path):
+    """Two differently-named files (a two-disc release) that both match the
+    same confident TMDB entry -- cmd_tmdb_canonicalize would generate the
+    identical canonical name for both, so it skips them as a collision
+    rather than pick one arbitrarily. Nested in a subfolder so a
+    library-relative path is distinguishable from a bare filename.
+    """
+    root = tmp_path / "Library"
+    movies = root / "Movies"
+    (movies / "ColBox").mkdir(parents=True)
+
+    cd1 = movies / "ColBox" / "Collide.Movie.CD1.mkv"
+    cd1.write_bytes(b"not really a video")
+    cd2 = movies / "ColBox" / "Collide.Movie.CD2.mkv"
+    cd2.write_bytes(b"not really a video")
+
+    (root / "movies_tmdb.json").write_text(json.dumps({
+        "movies": [
+            {"filename": cd1.name, "tmdb_id": 333,
+             "tmdb_title": "Collide Movie", "tmdb_year": "2022",
+             "match_status": "confident"},
+            {"filename": cd2.name, "tmdb_id": 333,
+             "tmdb_title": "Collide Movie", "tmdb_year": "2022",
+             "match_status": "confident"},
+        ]
+    }), encoding='utf-8')
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"library_root": str(root)}), encoding='utf-8')
+    config_mod.set_config(Config.load(cfg_path))
+
+    yield {"root": root, "cd1": cd1, "cd2": cd2}
+
+    config_mod.CONFIG = None
+
+
 @pytest.mark.parametrize("command,filename", [
     pytest.param(cmd_tmdb_canonicalize, "tmdb_canonicalize_preview.txt", id="tmdb-canonicalize"),
     pytest.param(cmd_tmdb_rename,       "tmdb_rename_preview.txt",       id="tmdb-rename"),
@@ -97,4 +134,27 @@ class TestPreviewShowsResolvedPath:
         assert dup_lines, f"expected a line mentioning the ambiguous file -- got:\n{text}"
         assert any("AMBIGUOUS" in line or "WARNING" in line for line in dup_lines), (
             f"ambiguous entry isn't flagged as such in the preview -- got:\n{dup_lines}"
+        )
+
+
+class TestCanonicalizeCollisionSectionShowsResolvedPaths:
+    """Collision entries (multi-part files sharing one TMDB match) are
+    listed separately from the main rename section and are never applied
+    either way, but the eleventh-pass reviewer found they still printed
+    bare filenames after the main-section fix -- the same
+    can't-tell-which-file problem the main fix addressed, just left
+    unaddressed in the one section specifically about ambiguity.
+    """
+
+    def test_collision_entries_show_the_library_relative_path(self, tmdb_collision_library):
+        cmd_tmdb_canonicalize(Args())
+        text = (tmdb_collision_library["root"] / "tmdb_canonicalize_preview.txt").read_text(
+            encoding='utf-8')
+        assert "ColBox/Collide.Movie.CD1.mkv" in text, (
+            f"collision section should show the resolved library-relative path, "
+            f"not a bare filename -- got:\n{text}"
+        )
+        assert "ColBox/Collide.Movie.CD2.mkv" in text
+        assert "  Collide.Movie.CD1.mkv\n" not in text, (
+            "collision section still shows a bare, unresolved filename"
         )

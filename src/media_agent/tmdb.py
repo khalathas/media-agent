@@ -346,21 +346,25 @@ def cmd_tmdb_canonicalize(args):
         print(f"Skipped (collision): {len(collision_items)} "
               f"— multi-part files sharing one TMDB entry")
 
-    if not proposals:
+    if not proposals and not collision_items:
         print("Nothing to do.")
         return
 
-    # Resolve each proposal to the actual file on disk *before* writing the
-    # report, not just at apply time -- movies_tmdb.json identifies films by
-    # bare filename, so two files sharing a name in different folders are
-    # indistinguishable in a report that only prints "FROM: Movie.mkv". Doing
-    # this once here means the preview shows exactly what apply will do (or
-    # exactly why it will skip an entry), instead of the reader having no way
-    # to tell which file, or whether the rename is even resolvable, until
-    # after they've already committed with --apply.
+    # Resolve each proposal -- and each skipped collision -- to the actual
+    # file on disk *before* writing the report, not just at apply time.
+    # movies_tmdb.json identifies films by bare filename, so two files
+    # sharing a name in different folders are indistinguishable in a report
+    # that only prints "FROM: Movie.mkv". Doing this once here means the
+    # preview shows exactly what apply will do (or exactly why it will skip
+    # an entry), instead of the reader having no way to tell which file, or
+    # whether the rename is even resolvable, until after they've already
+    # committed with --apply. Collisions are never applied either way, but
+    # the same ambiguity applies to identifying *which* file was skipped and
+    # why -- there's no reason the skip-report should be any less specific
+    # than the rename report right above it.
     disk_files = scan_video_files(get_config().sections['movies'])
     by_name    = group_by_basename(disk_files)
-    for p in proposals:
+    for p in proposals + collision_items:
         resolved_path, key_or_reason = _resolve_single_path(disk_files, by_name, p['old'])
         p['resolved_key'] = key_or_reason if resolved_path is not None else None
         p['resolve_error'] = None if resolved_path is not None else key_or_reason
@@ -381,10 +385,20 @@ def cmd_tmdb_canonicalize(args):
             rf.write("\n" + "=" * 70 + "\n")
             rf.write(f"SKIPPED — collisions ({len(collision_items)} files, multi-part sharing one TMDB entry):\n\n")
             for p in sorted(collision_items, key=lambda x: x['new']):
-                rf.write(f"  {p['old']}\n")
+                if p['resolve_error']:
+                    rf.write(f"  {p['old']}  [WARNING: {p['resolve_error']}]\n")
+                else:
+                    rf.write(f"  {p['resolved_key']}\n")
                 rf.write(f"    → would collide with: {p['new']}\n\n")
 
     print(f"Report saved to: {report_path}\n")
+
+    if not proposals:
+        # Every match this round was a multi-part collision -- the skip
+        # report above is still useful, but there's nothing left to
+        # preview or apply, and prompting "Rename 0 files?" would be
+        # confusing rather than helpful.
+        return
 
     # Renaming requires an explicit --apply. Passing no flag at all is a
     # preview, never a mutation -- see the safety contract in cli.py.
