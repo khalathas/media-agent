@@ -12,8 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         # Matches the OS and Python classifiers advertised in pyproject.toml
-        # -- if you add a classifier there, add it here too.
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # -- if you add a classifier there, add it here too. Windows is the
+        # primary supported platform; Linux is kept as a secondary target.
+        # macOS is explicitly out of scope -- not tested, not advertised.
+        os: [windows-latest, ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:

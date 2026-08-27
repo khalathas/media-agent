@@ -41,7 +41,7 @@ Start with `media-agent status`. It only reads, and it changes nothing.
 
 ## Requirements
 
-**Windows, macOS, or Linux.** Developed and used daily on Windows against a NAS; the others work but have had less real-world testing.
+**Windows.** Developed and used daily on Windows against a NAS, and the primary supported platform. Linux is a secondary target and is also covered by CI, but with less real-world testing. macOS is not supported or tested — most commands will likely work, since the tool is plain Python plus ffprobe, but expect rough edges.
 
 **Python 3.10 or newer.** Download from [python.org/downloads](https://www.python.org/downloads/). On Windows, **tick the "Add python.exe to PATH" checkbox** on the first screen of the installer — if you miss it, nothing below will work and the fix is annoying. To check it worked:
 
