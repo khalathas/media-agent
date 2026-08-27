@@ -11,6 +11,7 @@ by sourcing/dot-sourcing the real scripts (guarded so the installer body
 itself does not run) rather than reimplementing the logic under test.
 """
 
+import os
 import shutil
 import subprocess
 import tarfile
@@ -19,39 +20,64 @@ from pathlib import Path
 
 import pytest
 
+import test_ffmpeg_installer_safety as mod
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SH_SCRIPT = REPO_ROOT / "scripts" / "install_ffmpeg.sh"
 PS1_SCRIPT = REPO_ROOT / "scripts" / "install_ffmpeg.ps1"
 
 
-def _find_usable_bash():
-    """shutil.which("bash") can resolve to Windows' WSL launcher stub
-    (C:\\Windows\\System32\\bash.exe) even when no WSL distribution is
-    registered -- its mere presence on PATH doesn't mean it can actually
-    run a command. An earlier version of this module used
-    `shutil.which("bash")` directly and could pick that stub over a real,
-    working bash earlier on PATH depending on ordering, then have every
-    test in this file fail for an unrelated reason (no working shell,
-    not a real defect in the scripts under test).
+def _all_bash_candidates():
+    """Every "bash" found on PATH, in PATH order.
 
-    Probe with a real, trivial, non-interactive invocation before trusting
-    it. Treat any failure -- non-zero exit, unexpected output, or a hang
-    (some broken WSL launcher configurations block waiting for interactive
-    setup) -- as "no usable bash", the same outcome as not finding one at
-    all, so the tests below skip cleanly instead of failing on all of them.
+    shutil.which() only returns the first match -- on Windows that can be
+    the unusable WSL launcher stub (C:\\Windows\\System32\\bash.exe) with a
+    real, working bash (Git Bash, MSYS2) sitting later on PATH. Stopping at
+    the first candidate (as an earlier version of _find_usable_bash did)
+    then reports "no usable bash" and skips every test in this file, even
+    though a working one was one directory further down PATH the whole
+    time -- reproduced directly on a real Windows host with both installed.
     """
-    candidate = shutil.which("bash")
-    if candidate is None:
-        return None
+    seen = set()
+    candidates = []
+    exts = os.environ.get("PATHEXT", ".EXE").split(os.pathsep) if os.name == "nt" else [""]
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        for ext in exts:
+            candidate = os.path.join(directory, "bash" + ext.lower())
+            key = os.path.normcase(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                candidates.append(candidate)
+    return candidates
+
+
+def _probe_bash(candidate):
+    """Run a real, trivial, non-interactive command through `candidate` and
+    report whether it actually worked. Any failure -- non-zero exit,
+    unexpected output, or a hang (some broken WSL launcher configurations
+    block waiting for interactive setup) -- counts as unusable.
+    """
     try:
         result = subprocess.run(
             [candidate, "-c", "echo __BASH_USABLE__"],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode == 0 and "__BASH_USABLE__" in result.stdout:
-        return candidate
+        return False
+    return result.returncode == 0 and "__BASH_USABLE__" in result.stdout
+
+
+def _find_usable_bash():
+    """The first candidate on PATH that actually runs a command, trying
+    every "bash" found rather than giving up after the first unusable one.
+    """
+    for candidate in _all_bash_candidates():
+        if _probe_bash(candidate):
+            return candidate
     return None
 
 
@@ -84,53 +110,84 @@ def _run_powershell(snippet: str) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 
 
+def _fake_run_for(outcomes):
+    """Build a fake subprocess.run that maps each candidate path (the
+    first element of the invoked command list) to a canned outcome:
+    a CompletedProcess, or an exception instance/class to raise.
+    """
+    def fake_run(cmd, **kw):
+        outcome = outcomes[cmd[0]]
+        if isinstance(outcome, BaseException) or (
+                isinstance(outcome, type) and issubclass(outcome, BaseException)):
+            raise outcome
+        return outcome
+    return fake_run
+
+
+_USABLE = subprocess.CompletedProcess([], 0, stdout="__BASH_USABLE__\n", stderr="")
+_WSL_NO_DISTRO = subprocess.CompletedProcess(
+    [], 1, stdout="", stderr="Windows Subsystem for Linux has no installed distributions.\n")
+_UNEXPECTED_OUTPUT = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+
 class TestFindUsableBash:
     def test_none_when_nothing_on_path(self, monkeypatch):
-        monkeypatch.setattr(shutil, "which", lambda name: None)
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: [])
         assert _find_usable_bash() is None
 
     def test_returns_the_path_when_it_runs_successfully(self, monkeypatch):
-        monkeypatch.setattr(shutil, "which", lambda name: "/fake/working/bash")
-
-        def fake_run(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 0, stdout="__BASH_USABLE__\n", stderr="")
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: ["/fake/working/bash"])
+        monkeypatch.setattr(subprocess, "run", _fake_run_for({"/fake/working/bash": _USABLE}))
 
         assert _find_usable_bash() == "/fake/working/bash"
 
-    def test_none_when_the_launcher_exits_nonzero(self, monkeypatch):
+    def test_none_when_the_only_candidate_exits_nonzero(self, monkeypatch):
         """Reproduces the reported WSL failure mode: a launcher stub that's
         present on PATH but exits with an error because no distribution is
         registered."""
-        monkeypatch.setattr(shutil, "which", lambda name: "/fake/wsl/bash.exe")
-
-        def fake_run(cmd, **kw):
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout="", stderr="Windows Subsystem for Linux has no installed distributions.\n")
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: ["/fake/wsl/bash.exe"])
+        monkeypatch.setattr(subprocess, "run", _fake_run_for({"/fake/wsl/bash.exe": _WSL_NO_DISTRO}))
 
         assert _find_usable_bash() is None
 
-    def test_none_when_the_launcher_hangs(self, monkeypatch):
+    def test_none_when_the_only_candidate_hangs(self, monkeypatch):
         """Some broken WSL configurations block waiting for interactive
         setup instead of exiting -- must not hang the whole test collection
         waiting on it; a timeout is treated the same as "unusable"."""
-        monkeypatch.setattr(shutil, "which", lambda name: "/fake/hanging/bash.exe")
-
-        def fake_run(cmd, **kw):
-            raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 10))
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: ["/fake/hanging/bash.exe"])
+        monkeypatch.setattr(subprocess, "run", _fake_run_for({
+            "/fake/hanging/bash.exe": subprocess.TimeoutExpired(["/fake/hanging/bash.exe"], 10)}))
 
         assert _find_usable_bash() is None
 
-    def test_none_when_output_is_unexpected(self, monkeypatch):
+    def test_none_when_the_only_candidate_output_is_unexpected(self, monkeypatch):
         """Exit code 0 alone isn't enough -- confirm it actually ran *our*
         command rather than, say, silently succeeding at something else."""
-        monkeypatch.setattr(shutil, "which", lambda name: "/fake/odd/bash")
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: ["/fake/odd/bash"])
+        monkeypatch.setattr(subprocess, "run", _fake_run_for({"/fake/odd/bash": _UNEXPECTED_OUTPUT}))
 
-        def fake_run(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _find_usable_bash() is None
+
+    def test_falls_through_an_unusable_wsl_stub_to_a_working_bash_later_on_path(self, monkeypatch):
+        """The eleventh-pass reviewer's exact reproduction: an unusable WSL
+        launcher earlier on PATH must not make the whole probe give up --
+        a real, working bash sitting further down PATH is still found."""
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: [
+            r"C:\Windows\System32\bash.exe", r"C:\msys64\usr\bin\bash.exe"])
+        monkeypatch.setattr(subprocess, "run", _fake_run_for({
+            r"C:\Windows\System32\bash.exe": _WSL_NO_DISTRO,
+            r"C:\msys64\usr\bin\bash.exe": _USABLE,
+        }))
+
+        assert _find_usable_bash() == r"C:\msys64\usr\bin\bash.exe"
+
+    def test_gives_up_only_after_every_candidate_fails(self, monkeypatch):
+        monkeypatch.setattr(mod, "_all_bash_candidates", lambda: [
+            "/fake/wsl1/bash.exe", "/fake/wsl2/bash.exe"])
+        monkeypatch.setattr(subprocess, "run", _fake_run_for({
+            "/fake/wsl1/bash.exe": _WSL_NO_DISTRO,
+            "/fake/wsl2/bash.exe": _WSL_NO_DISTRO,
+        }))
 
         assert _find_usable_bash() is None
 
