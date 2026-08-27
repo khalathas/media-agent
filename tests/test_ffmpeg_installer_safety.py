@@ -63,23 +63,19 @@ def _all_bash_candidates():
 # MSYS2 bash can resolve `tar` to the Windows one depending on PATH order,
 # passing a trivial echo probe while every archive-hardening test then fails
 # with "could not list archive contents" for a reason unrelated to the
-# scripts under test. The probe below creates a real, valid, empty tar
-# (two 512-byte zero blocks -- the standard end-of-archive marker,
-# recognized by any conformant tar) and lists it with --force-local: GNU
-# tar accepts the flag and succeeds, bsdtar rejects the flag before it even
-# looks at the file and fails immediately -- a clean, content-independent
-# way to tell them apart without depending on either implementation's exact
-# error wording.
-_TAR_PROBE_SCRIPT = (
-    't=$(mktemp) || exit 1\n'
-    'head -c 1024 /dev/zero > "$t"\n'
-    'if tar --force-local -tf "$t" >/dev/null 2>&1; then\n'
-    '    rm -f "$t"\n'
-    '    echo __BASH_USABLE__\n'
-    'else\n'
-    '    rm -f "$t"\n'
-    'fi\n'
-)
+# scripts under test.
+#
+# `tar --force-local --version` alone -- no archive, no temp file --
+# distinguishes them cleanly: GNU tar accepts the flag and exits 0; bsdtar
+# rejects the flag itself, before ever looking at what --version would have
+# printed, and exits nonzero. An earlier version of this probe created a
+# real empty archive via shell `mktemp` to list instead; the thirteenth-pass
+# reviewer found that fails closed for the wrong reason in a restricted
+# environment where the shell's own /tmp isn't writable (mktemp itself
+# fails, so every Bash test silently skips) and can leak the temp file if
+# the child is killed on a timeout before either cleanup branch runs. This
+# version needs no filesystem access at all.
+_TAR_PROBE_SCRIPT = 'tar --force-local --version >/dev/null 2>&1 && echo __BASH_USABLE__\n'
 
 
 def _probe_bash(candidate):
@@ -237,27 +233,39 @@ def test_probe_bash_accepts_the_real_selected_shell():
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")
-def test_probe_bash_rejects_a_shell_whose_inherited_tar_is_incompatible(monkeypatch):
+def test_probe_bash_rejects_a_shell_whose_resolved_tar_is_incompatible(tmp_path, monkeypatch):
     """Reproduction of the twelfth-pass reviewer's finding: a bash whose
-    inherited PATH resolves `tar` to Windows' bundled bsdtar
-    (C:\\Windows\\System32\\tar.exe, which rejects --force-local outright)
-    must fail the probe -- a bare `echo` through the same shell would
-    still succeed, which is exactly how the previous version of this probe
-    could select a shell that runs fine but can't actually list an archive
-    the way check_archive_paths needs.
+    resolved `tar` rejects --force-local (as Windows' bundled bsdtar does)
+    must fail the probe -- a bare `echo` through the same shell would still
+    succeed, which is exactly how the previous version of this probe could
+    select a shell that runs fine but can't actually list an archive the
+    way check_archive_paths needs.
 
-    Calls _probe_bash() itself, not a hand-copied script -- an earlier
-    version of this test constructed its own poisoned script inline and
-    ran it via a raw subprocess.run(), which meant it was only testing
-    that *a* script could reproduce the failure, not that _probe_bash()
-    itself would catch it; reverting _probe_bash() back to an echo-only
-    check didn't make that version fail. subprocess.run() with no explicit
-    env inherits the current process's environment at call time, so
-    prepending the bsdtar directory to this process's PATH before calling
-    _probe_bash() reproduces a real machine's PATH ordering without any
-    mocking of _probe_bash or subprocess.run themselves.
+    Platform-neutral by construction: an earlier version of this test
+    hardcoded the literal Windows path "C:\\Windows\\System32" and joined
+    it with os.pathsep. On POSIX, os.pathsep is ":", and that path string
+    contains its own ":" (after "C") -- Python splits it into two
+    nonexistent PATH entries instead of one, so the "poisoning" had no
+    effect at all on Linux/macOS CI, where the real GNU tar remained
+    resolved and _probe_bash() correctly returned True while the test
+    asserted False, a deterministic failure on the ubuntu-latest CI job.
+    Confirmed directly by splitting that exact string on ":".
+
+    Instead of relying on any real OS's bundled tar, this builds its own
+    minimal fake `tar` (a tiny script that always exits nonzero -- it
+    doesn't need to implement real tar behavior, only fail the same way an
+    incompatible one would) and prepends its directory to PATH using
+    os.pathsep correctly for whatever platform the test actually runs on.
+    Verified directly that bash's own command resolution finds this
+    Python-written, chmod'd-executable file via a bare `tar` on PATH.
     """
-    monkeypatch.setenv("PATH", "C:\\Windows\\System32" + os.pathsep + os.environ["PATH"])
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_tar = fake_bin / "tar"
+    fake_tar.write_text("#!/usr/bin/env bash\nexit 1\n", encoding='utf-8')
+    fake_tar.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
     assert _probe_bash(BASH) is False, (
         "the probe must fail when the resolved tar can't do --force-local, "
         "not just when the shell itself doesn't run"
