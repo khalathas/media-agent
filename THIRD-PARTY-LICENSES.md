@@ -19,6 +19,8 @@ media-agent's own dependency declarations are lower-bounded (`mutagen>=1.47.0`, 
 
 This file is a disclosure of what's installed, not a legal opinion on how the licenses interact. If you plan to redistribute media-agent bundled with its dependencies (rather than having users `pip install` them separately), or to build a derivative product from this project, get your own advice on what that requires — in particular, `mutagen`'s GPL terms may impose obligations on a bundled, combined distribution that don't apply to media-agent's own MIT-licensed code in isolation.
 
+**Project owner's distribution decision (2026-08-27):** media-agent's own source remains MIT-licensed. `mutagen` is declared as an ordinary `pip`-resolved dependency, not bundled or vendored into this repository or its built artifacts — end users who install media-agent get `mutagen` the same way they'd get it installing any other package that depends on it. Having reviewed this disclosure, the project owner has chosen to proceed on that basis rather than relicense the project or restructure the dependency. This line records that decision; it is not a substitute for independent legal advice if your own use case differs (e.g. bundling, vendoring, or building a derivative distribution).
+
 ## FFmpeg
 
 media-agent does not bundle, vendor, or redistribute FFmpeg or ffprobe — this repository and its installable package contain no FFmpeg binary. media-agent looks for `ffprobe` already on your system, and `scripts/install_ffmpeg.*` can optionally fetch a build directly onto **your own machine**, at your request, when you choose to run the script:
