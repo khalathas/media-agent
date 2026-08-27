@@ -10,6 +10,7 @@ import io
 import json
 import os
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -173,33 +174,72 @@ class TestTmdbTokenPrompt:
 
         assert not chmod_calls, "chmod should not run when no token was ever written"
 
-    def test_token_file_created_with_restrictive_mode_not_chmod_after(self, tmp_path,
-                                                                        library, monkeypatch):
-        """A plain open() creates the file at the umask's default permissions
-        (often group/other-readable), leaving a window between creation and
-        a later chmod where the token sits on disk more exposed than
-        intended. os.open() with an explicit mode applies it atomically at
-        creation instead -- assert that path is actually used for the
-        token-bearing write, not just that chmod eventually runs (the
-        pre-existing tests above already cover that part).
+    def test_token_config_is_written_via_atomic_replace(self, tmp_path, library, monkeypatch):
+        """The whole file is built at a temporary path first (with
+        restrictive permissions applied there) and swapped into place with
+        a single os.replace(), rather than ever opening config_path itself
+        for writing -- so the destination is never exposed mid-write under
+        whatever permissions it happens to have, whether it's brand new or
+        an existing file being overwritten. See the overwrite-specific test
+        below for the exposure this specifically closes.
         """
         import media_agent.doctor as doctor_mod
 
-        real_os_open = doctor_mod.os.open
+        real_replace = doctor_mod.os.replace
         calls = []
 
-        def spy_open(path, flags, mode=0o777):
-            calls.append((path, flags, mode))
-            return real_os_open(path, flags, mode)
-        monkeypatch.setattr(doctor_mod.os, 'open', spy_open)
+        def spy_replace(src, dst):
+            calls.append((src, dst))
+            return real_replace(src, dst)
+        monkeypatch.setattr(doctor_mod.os, 'replace', spy_replace)
 
         run_init(monkeypatch, tmp_path, [str(library), "a-real-token"])
 
-        assert calls, "the token-bearing config file must be created via os.open() " \
-                       "with an explicit restrictive mode, not a plain open()"
-        _, flags, mode = calls[0]
-        assert mode == 0o600, f"expected the file created at mode 0o600, got {oct(mode)}"
-        assert flags & os.O_CREAT, "must create the file (not just open an existing one)"
+        assert calls, "the token-bearing config file must be swapped into place via os.replace()"
+        src, dst = calls[0]
+        assert str(dst) == str(config_path(tmp_path))
+        assert str(src) != str(config_path(tmp_path)), \
+            "must write to a temporary path, not open the destination directly"
+
+    def test_overwriting_existing_config_never_truncates_it_in_place(self, tmp_path, library,
+                                                                       monkeypatch):
+        """The MAJOR-finding reproduction: cmd_init supports overwriting an
+        existing config. An earlier version of the restrictive-mode fix
+        only protected a *brand-new* file -- os.open()'s mode argument is
+        ignored when O_CREAT finds the file already there, so overwriting
+        an existing (possibly permissive) config wrote the new token
+        straight into that file under its old permissions, with the
+        restrictive chmod only landing afterward. The whole point of the
+        fix is that the destination is never opened for writing at all;
+        confirm that by inspecting its content from inside a spy on
+        os.replace() itself, at the moment the swap happens.
+        """
+        import media_agent.doctor as doctor_mod
+
+        cfg = config_path(tmp_path)
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text('{"library_root": "old-value", "tmdb_read_access_token": "OLD-TOKEN"}',
+                       encoding='utf-8')
+
+        seen_at_replace_time = {}
+        real_replace = doctor_mod.os.replace
+
+        def spy_replace(src, dst):
+            seen_at_replace_time['dest_content'] = Path(dst).read_text(encoding='utf-8')
+            return real_replace(src, dst)
+        monkeypatch.setattr(doctor_mod.os, 'replace', spy_replace)
+
+        run_init(monkeypatch, tmp_path, ["y", str(library), "NEW-TOKEN"])
+
+        assert seen_at_replace_time, "os.replace() was never called"
+        assert "OLD-TOKEN" in seen_at_replace_time['dest_content'], (
+            "the existing config must still hold its OLD content right up until "
+            "the atomic swap -- if this fails, the new token was written into the "
+            "existing file (and therefore under its existing permissions) before "
+            "the swap, reopening the exact exposure window this fix closes"
+        )
+        saved = json.loads(cfg.read_text(encoding='utf-8'))
+        assert saved["tmdb_read_access_token"] == "NEW-TOKEN"
 
     def test_no_token_config_uses_plain_open_not_os_open(self, tmp_path, library, monkeypatch):
         """The restrictive-mode path only matters once a credential is being

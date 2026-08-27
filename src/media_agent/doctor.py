@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -273,21 +274,39 @@ def cmd_init(args):
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     if tmdb_token:
-        # The file is about to hold a credential. A plain open() creates it
-        # with the umask's default permissions (often group/other-readable)
-        # and there is a window between that creation and a later chmod
-        # where the token sits on disk at those looser permissions. Passing
-        # the restrictive mode to os.open() applies it atomically at
-        # creation instead -- POSIX guarantees mode & ~umask, so there is no
-        # window a concurrent local reader could land in. This only closes
-        # the gap for a brand-new file; an *existing* file being overwritten
-        # keeps whatever permissions it already had, which is why the
-        # chmod-after fallback below still runs regardless.
-        fd = os.open(str(config_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
-            f.write('\n')
-        _restrict_config_permissions(config_path)
+        # The file is about to hold a credential. Writing straight into
+        # config_path -- whether it's brand new or an existing file being
+        # overwritten -- exposes the token on disk at whatever permissions
+        # that path ends up with for the entire write/close interval,
+        # however briefly, before any chmod could run afterward. That's a
+        # real gap even for a fresh file (umask's default permissions apply
+        # for however long it takes json.dump to finish), and a *worse* one
+        # for an overwrite: O_TRUNC keeps the destination's OLD permissions
+        # -- if that file was ever group/other-readable, the new token is
+        # written under those looser permissions with no window closed at
+        # all, no matter how the new file is opened.
+        #
+        # Building the complete file at a temporary path with restrictive
+        # permissions from its own creation, then atomically swapping it
+        # into place, closes both cases the same way: config_path itself is
+        # never opened for writing, so it's never exposed mid-write under
+        # whatever permissions it happened to have -- the destination only
+        # ever gains the new content and the new (already-restrictive)
+        # permissions in one atomic step.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(config_path.parent), prefix='.media-agent-config-', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2)
+                f.write('\n')
+            _restrict_config_permissions(Path(tmp_name))
+            os.replace(tmp_name, str(config_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     else:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2)
