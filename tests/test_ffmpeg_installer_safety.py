@@ -75,20 +75,29 @@ def _all_bash_candidates():
 # fails, so every Bash test silently skips) and can leak the temp file if
 # the child is killed on a timeout before either cleanup branch runs. This
 # version needs no filesystem access at all.
-_TAR_PROBE_SCRIPT = 'tar --force-local --version >/dev/null 2>&1 && echo __BASH_USABLE__\n'
+def _tar_probe_script(tar_cmd="tar"):
+    """`tar_cmd` defaults to a bare PATH lookup, matching real usage. Tests
+    that need to exercise an *incompatible* tar deterministically pass an
+    explicit path instead -- see the comment on test_probe_bash_rejects_...
+    below for why PATH injection alone isn't reliable for that.
+    """
+    return f'{tar_cmd} --force-local --version >/dev/null 2>&1 && echo __BASH_USABLE__\n'
 
 
-def _probe_bash(candidate):
+_TAR_PROBE_SCRIPT = _tar_probe_script()
+
+
+def _probe_bash(candidate, tar_cmd="tar"):
     """Run a real, non-interactive script through `candidate` and report
     whether it actually works -- both the shell itself and, specifically,
-    a GNU-tar-compatible `tar` resolved through its inherited PATH (see
-    _TAR_PROBE_SCRIPT above). Any failure -- non-zero exit, unexpected
-    output, or a hang (some broken WSL launcher configurations block
-    waiting for interactive setup) -- counts as unusable.
+    a GNU-tar-compatible `tar` (see _tar_probe_script above). Any failure
+    -- non-zero exit, unexpected output, or a hang (some broken WSL
+    launcher configurations block waiting for interactive setup) -- counts
+    as unusable.
     """
     try:
         result = subprocess.run(
-            [candidate, "-c", _TAR_PROBE_SCRIPT],
+            [candidate, "-c", _tar_probe_script(tar_cmd)],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -233,7 +242,7 @@ def test_probe_bash_accepts_the_real_selected_shell():
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")
-def test_probe_bash_rejects_a_shell_whose_resolved_tar_is_incompatible(tmp_path, monkeypatch):
+def test_probe_bash_rejects_a_shell_whose_resolved_tar_is_incompatible(tmp_path):
     """Reproduction of the twelfth-pass reviewer's finding: a bash whose
     resolved `tar` rejects --force-local (as Windows' bundled bsdtar does)
     must fail the probe -- a bare `echo` through the same shell would still
@@ -241,23 +250,28 @@ def test_probe_bash_rejects_a_shell_whose_resolved_tar_is_incompatible(tmp_path,
     select a shell that runs fine but can't actually list an archive the
     way check_archive_paths needs.
 
-    Platform-neutral by construction: an earlier version of this test
-    hardcoded the literal Windows path "C:\\Windows\\System32" and joined
-    it with os.pathsep. On POSIX, os.pathsep is ":", and that path string
-    contains its own ":" (after "C") -- Python splits it into two
-    nonexistent PATH entries instead of one, so the "poisoning" had no
-    effect at all on Linux/macOS CI, where the real GNU tar remained
-    resolved and _probe_bash() correctly returned True while the test
-    asserted False, a deterministic failure on the ubuntu-latest CI job.
-    Confirmed directly by splitting that exact string on ":".
+    An earlier version of this test hardcoded the literal Windows path
+    "C:\\Windows\\System32" and joined it with os.pathsep -- on POSIX,
+    os.pathsep is ":", and that path string contains its own ":" (after
+    "C"), so the "poisoning" had no effect at all on Linux CI, a
+    deterministic failure there. The fix (prepending a fake tar's own
+    directory to PATH via os.pathsep) was portable in principle, but
+    turned out not to reliably win PATH-resolution precedence against
+    every Git-for-Windows bash variant either: GitHub's windows-latest
+    runner resolves bash to a different binary (Git\\bin\\bash.exe) than
+    this project's dev machine (Git\\usr\\bin\\bash.exe), and that variant
+    evidently prepends its own bundled GNU tar ahead of anything set via
+    the parent process's PATH, so the fake tar never got resolved there
+    either -- confirmed by the CI log showing _probe_bash() returned True
+    despite the fake tar being on PATH.
 
-    Instead of relying on any real OS's bundled tar, this builds its own
-    minimal fake `tar` (a tiny script that always exits nonzero -- it
-    doesn't need to implement real tar behavior, only fail the same way an
-    incompatible one would) and prepends its directory to PATH using
-    os.pathsep correctly for whatever platform the test actually runs on.
-    Verified directly that bash's own command resolution finds this
-    Python-written, chmod'd-executable file via a bare `tar` on PATH.
+    Sidesteps PATH-resolution precedence entirely instead of trying to win
+    it: _probe_bash()'s tar_cmd parameter lets this test tell the probe
+    script exactly which tar to invoke, by its own absolute path, the same
+    way a real incompatible tar would be invoked once actually resolved --
+    this tests the probe's REACTION to an incompatible tar (the thing that
+    actually matters) without depending on any particular bash build's
+    PATH-merging behavior to get there.
     """
     fake_bin = tmp_path / "fakebin"
     fake_bin.mkdir()
@@ -265,8 +279,7 @@ def test_probe_bash_rejects_a_shell_whose_resolved_tar_is_incompatible(tmp_path,
     fake_tar.write_text("#!/usr/bin/env bash\nexit 1\n", encoding='utf-8')
     fake_tar.chmod(0o755)
 
-    monkeypatch.setenv("PATH", str(fake_bin) + os.pathsep + os.environ["PATH"])
-    assert _probe_bash(BASH) is False, (
+    assert _probe_bash(BASH, tar_cmd=fake_tar.as_posix()) is False, (
         "the probe must fail when the resolved tar can't do --force-local, "
         "not just when the shell itself doesn't run"
     )
