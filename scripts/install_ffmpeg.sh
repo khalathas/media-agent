@@ -134,7 +134,16 @@ check_archive_paths() {
 
         size="$(awk '{print $3; exit}' <<<"$vline")"
         case "$size" in
-            ''|*[!0-9]*) size=0 ;;   # unparseable -- don't let it poison the running total
+            ''|*[!0-9]*)
+                # A field this check can't parse is exactly the case the
+                # size limit exists to catch -- treating it as 0 would let
+                # that member's real size (however large) pass uncounted,
+                # silently weakening the decompression-bomb guard instead
+                # of enforcing it. Fail closed: reject rather than guess.
+                echo "ERROR: could not parse a numeric size for archive member: $member (raw listing: '$vline')" >&2
+                unsafe=1
+                continue
+                ;;
         esac
         total_size=$((total_size + size))
 

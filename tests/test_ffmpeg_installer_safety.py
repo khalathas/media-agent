@@ -436,6 +436,37 @@ fi
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_fails_closed_on_unparseable_size(tmp_path):
+    """The eleventh-pass reviewer's finding: an empty or non-numeric size
+    field from `tar -tvf` was silently converted to 0, letting that
+    member's real (unknown) size pass uncounted -- the size guard fails
+    open exactly where it matters most, on the field it can't read.
+
+    No real archive makes a conforming `tar -tvf` emit a non-numeric size
+    for a regular file, so this is faked by shadowing `tar` itself with a
+    shell function that returns a safe path listing but a garbage verbose
+    size field -- reproducing "a tar output format this parser can't read"
+    without needing an actually-nonconformant tar binary.
+    """
+    result = _run_bash('''
+tar() {
+    case "$2" in
+        -tf)  echo "file.txt" ;;
+        -tvf) echo "-rw-r--r-- 0/0 NOT-A-NUMBER 1969-12-31 19:00 file.txt" ;;
+    esac
+}
+if check_archive_paths "irrelevant.tar"; then
+    echo ACCEPTED_UNPARSEABLE
+else
+    echo REJECTED_UNPARSEABLE
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_UNPARSEABLE" in result.stdout
+    assert "ACCEPTED_UNPARSEABLE" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
 def test_sh_pinned_version_and_checksums_present():
     """The installer must not fall back to a mutable 'latest' URL alias --
     guard against a future edit silently reintroducing it."""
