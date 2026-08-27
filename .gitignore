@@ -28,3 +28,7 @@ vendor/ffmpeg/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Review handoffs and result docs -- internal, not part of the published
+# project. Both directions (brief -> reviewer, findings -> us) live here.
+codereview/

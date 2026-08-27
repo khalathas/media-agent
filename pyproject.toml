@@ -1,0 +1,65 @@
+[build-system]
+# 1.27.0 is the true floor for the `license-files` list form below (PEP 639) --
+# verified directly, not assumed. 1.25.0 and earlier raise
+# `TypeError: Field 'project.license-files' must be a table` at build time.
+# 1.26.x *accepts* the list and bundles both files into the wheel, but still
+# emits Core Metadata 2.3 with no `License-File` header at all -- i.e. pip
+# and PyPI see an undisclosed license file, even though it's physically
+# present in the archive. 1.27.0 is the first release that emits Core
+# Metadata 2.4 with a `License-File` header per file. Verified by building
+# against 1.26.0, 1.26.3, and 1.27.0 in isolated venvs and inspecting the
+# wheel's actual METADATA, not just its file listing.
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "media-agent"
+version = "0.2.0"
+description = "Organise a Plex media library on disk: normalise filenames, build indexes, enrich movies from TMDB."
+readme = "README.md"
+requires-python = ">=3.10"
+license-files = ["LICENSE", "THIRD-PARTY-LICENSES.md"]
+authors = [{ name = "khalathas" }]
+keywords = ["plex", "media", "library", "tmdb", "filename", "organiser"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Filesystems",
+]
+dependencies = [
+    "requests>=2.31.0",
+    "mutagen>=1.47.0",
+]
+
+[project.optional-dependencies]
+# build + hatchling: tests/test_packaging.py builds a real wheel/sdist with
+# `python -m build --no-isolation`, which needs both already importable in
+# the current environment. Without them here, `pip install -e ".[dev]"` --
+# the exact command CONTRIBUTING.md and CI both document -- leaves pytest
+# unable to run that file at all.
+dev = ["pytest>=8.0", "build>=1.0", "hatchling>=1.27"]
+
+[project.scripts]
+media-agent = "media_agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/khalathas/media-agent"
+Issues = "https://github.com/khalathas/media-agent/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/media_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# So a bare `pytest` works in a fresh clone, without an editable install.
+pythonpath = ["src", "tests"]
