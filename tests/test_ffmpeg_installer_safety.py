@@ -23,7 +23,39 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SH_SCRIPT = REPO_ROOT / "scripts" / "install_ffmpeg.sh"
 PS1_SCRIPT = REPO_ROOT / "scripts" / "install_ffmpeg.ps1"
 
-BASH = shutil.which("bash")
+
+def _find_usable_bash():
+    """shutil.which("bash") can resolve to Windows' WSL launcher stub
+    (C:\\Windows\\System32\\bash.exe) even when no WSL distribution is
+    registered -- its mere presence on PATH doesn't mean it can actually
+    run a command. An earlier version of this module used
+    `shutil.which("bash")` directly and could pick that stub over a real,
+    working bash earlier on PATH depending on ordering, then have every
+    test in this file fail for an unrelated reason (no working shell,
+    not a real defect in the scripts under test).
+
+    Probe with a real, trivial, non-interactive invocation before trusting
+    it. Treat any failure -- non-zero exit, unexpected output, or a hang
+    (some broken WSL launcher configurations block waiting for interactive
+    setup) -- as "no usable bash", the same outcome as not finding one at
+    all, so the tests below skip cleanly instead of failing on all of them.
+    """
+    candidate = shutil.which("bash")
+    if candidate is None:
+        return None
+    try:
+        result = subprocess.run(
+            [candidate, "-c", "echo __BASH_USABLE__"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0 and "__BASH_USABLE__" in result.stdout:
+        return candidate
+    return None
+
+
+BASH = _find_usable_bash()
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 
@@ -45,6 +77,62 @@ def _run_powershell(snippet: str) -> subprocess.CompletedProcess:
         text=True,
         timeout=30,
     )
+
+
+# ---------------------------------------------------------------------------
+# _find_usable_bash itself -- the bug this file's own bash-detection had
+# ---------------------------------------------------------------------------
+
+
+class TestFindUsableBash:
+    def test_none_when_nothing_on_path(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        assert _find_usable_bash() is None
+
+    def test_returns_the_path_when_it_runs_successfully(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: "/fake/working/bash")
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="__BASH_USABLE__\n", stderr="")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _find_usable_bash() == "/fake/working/bash"
+
+    def test_none_when_the_launcher_exits_nonzero(self, monkeypatch):
+        """Reproduces the reported WSL failure mode: a launcher stub that's
+        present on PATH but exits with an error because no distribution is
+        registered."""
+        monkeypatch.setattr(shutil, "which", lambda name: "/fake/wsl/bash.exe")
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="Windows Subsystem for Linux has no installed distributions.\n")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _find_usable_bash() is None
+
+    def test_none_when_the_launcher_hangs(self, monkeypatch):
+        """Some broken WSL configurations block waiting for interactive
+        setup instead of exiting -- must not hang the whole test collection
+        waiting on it; a timeout is treated the same as "unusable"."""
+        monkeypatch.setattr(shutil, "which", lambda name: "/fake/hanging/bash.exe")
+
+        def fake_run(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 10))
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _find_usable_bash() is None
+
+    def test_none_when_output_is_unexpected(self, monkeypatch):
+        """Exit code 0 alone isn't enough -- confirm it actually ran *our*
+        command rather than, say, silently succeeding at something else."""
+        monkeypatch.setattr(shutil, "which", lambda name: "/fake/odd/bash")
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _find_usable_bash() is None
 
 
 # ---------------------------------------------------------------------------
