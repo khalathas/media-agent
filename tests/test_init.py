@@ -8,6 +8,7 @@ silently reports zero files.
 
 import io
 import json
+import os
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -171,6 +172,48 @@ class TestTmdbTokenPrompt:
         run_init(monkeypatch, tmp_path, [str(library), ""])
 
         assert not chmod_calls, "chmod should not run when no token was ever written"
+
+    def test_token_file_created_with_restrictive_mode_not_chmod_after(self, tmp_path,
+                                                                        library, monkeypatch):
+        """A plain open() creates the file at the umask's default permissions
+        (often group/other-readable), leaving a window between creation and
+        a later chmod where the token sits on disk more exposed than
+        intended. os.open() with an explicit mode applies it atomically at
+        creation instead -- assert that path is actually used for the
+        token-bearing write, not just that chmod eventually runs (the
+        pre-existing tests above already cover that part).
+        """
+        import media_agent.doctor as doctor_mod
+
+        real_os_open = doctor_mod.os.open
+        calls = []
+
+        def spy_open(path, flags, mode=0o777):
+            calls.append((path, flags, mode))
+            return real_os_open(path, flags, mode)
+        monkeypatch.setattr(doctor_mod.os, 'open', spy_open)
+
+        run_init(monkeypatch, tmp_path, [str(library), "a-real-token"])
+
+        assert calls, "the token-bearing config file must be created via os.open() " \
+                       "with an explicit restrictive mode, not a plain open()"
+        _, flags, mode = calls[0]
+        assert mode == 0o600, f"expected the file created at mode 0o600, got {oct(mode)}"
+        assert flags & os.O_CREAT, "must create the file (not just open an existing one)"
+
+    def test_no_token_config_uses_plain_open_not_os_open(self, tmp_path, library, monkeypatch):
+        """The restrictive-mode path only matters once a credential is being
+        written -- a token-free config has nothing to protect, so it should
+        take the ordinary open() path unchanged."""
+        import media_agent.doctor as doctor_mod
+
+        calls = []
+        monkeypatch.setattr(doctor_mod.os, 'open',
+                            lambda *a, **kw: calls.append(a) or pytest.fail(
+                                "os.open should not be used when no token is present"))
+
+        run_init(monkeypatch, tmp_path, [str(library), ""])
+        assert not calls
 
     def test_restrict_config_permissions_is_a_noop_on_windows(self, tmp_path, monkeypatch):
         import media_agent.doctor as doctor_mod

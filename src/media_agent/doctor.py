@@ -271,12 +271,27 @@ def cmd_init(args):
         config["tmdb_read_access_token"] = tmdb_token
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2)
-        f.write('\n')
 
     if tmdb_token:
+        # The file is about to hold a credential. A plain open() creates it
+        # with the umask's default permissions (often group/other-readable)
+        # and there is a window between that creation and a later chmod
+        # where the token sits on disk at those looser permissions. Passing
+        # the restrictive mode to os.open() applies it atomically at
+        # creation instead -- POSIX guarantees mode & ~umask, so there is no
+        # window a concurrent local reader could land in. This only closes
+        # the gap for a brand-new file; an *existing* file being overwritten
+        # keeps whatever permissions it already had, which is why the
+        # chmod-after fallback below still runs regardless.
+        fd = os.open(str(config_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+            f.write('\n')
         _restrict_config_permissions(config_path)
+    else:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+            f.write('\n')
 
     print()
     print(f"Config written to: {config_path}")
