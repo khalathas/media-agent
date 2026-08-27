@@ -60,3 +60,48 @@ jobs:
           fi
           media-agent --help
           python -m media_agent --help
+
+  # Guards the exact floor declared in pyproject.toml's [build-system].requires.
+  # An earlier round declared hatchling>=1.26 believing it was the true floor
+  # for the `license-files` list syntax; it accepted the syntax and bundled
+  # both license files into the wheel, but silently emitted Core Metadata 2.3
+  # with no `License-File` header at all -- undisclosed to pip/PyPI despite
+  # being physically present in the archive. Only 1.27.0+ emits the header.
+  # This job pins the exact floor (not "latest") so a future syntax change
+  # that needs a higher floor fails here instead of only being caught by
+  # manually installing old versions again.
+  minimum-hatchling-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install exact declared floor
+        run: pip install build "hatchling==1.27.0"
+
+      - name: Build against the exact floor
+        run: python -m build --no-isolation --wheel
+
+      - name: Verify the wheel discloses both license files in METADATA
+        run: |
+          python - <<'EOF'
+          import pathlib, zipfile
+
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as z:
+              meta_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+              text = z.read(meta_name).decode("utf-8")
+
+          declared = {
+              line.split(":", 1)[1].strip()
+              for line in text.splitlines()
+              if line.startswith("License-File:")
+          }
+          required = {"LICENSE", "THIRD-PARTY-LICENSES.md"}
+          missing = required - declared
+          assert not missing, f"{missing} not declared via License-File at the declared minimum hatchling version"
+          print(f"OK: {declared} declared in METADATA at hatchling==1.27.0")
+          EOF
