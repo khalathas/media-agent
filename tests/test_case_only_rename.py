@@ -26,11 +26,54 @@ class Args:
         self.__dict__.update(kw)
 
 
+def _filesystem_is_case_insensitive(tmp_path):
+    """Empirically probe whether tmp_path's filesystem folds case, rather
+    than assume by OS name -- macOS can be configured case-sensitive, so
+    writing a real file and checking whether the other-cased name also
+    resolves to it is the only way to know for certain on this host.
+    """
+    probe = tmp_path / "case-probe.tmp"
+    probe.write_bytes(b"x")
+    is_insensitive = (tmp_path / "CASE-PROBE.tmp").exists()
+    probe.unlink()
+    return is_insensitive
+
+
 class TestIsCaseOnlyRename:
-    def test_true_for_pure_case_difference(self, tmp_path):
+    def test_true_for_pure_case_difference_on_a_case_insensitive_filesystem(self, tmp_path):
+        """is_case_only_rename's whole point is answering "does the OS
+        consider these the same file" -- which is genuinely filesystem-
+        dependent (the function itself uses os.path.normcase, a no-op on
+        POSIX and case-folding on Windows). Found via a real CI run on
+        ubuntu-latest, not local testing: an earlier version of this test
+        asserted a fixed True regardless of platform, which happened to
+        pass on this project's only locally-tested platform (Windows) for
+        14 review rounds, then failed the very first time it ran on Linux
+        -- correctly, since "the.matrix.mkv" and "The.Matrix.mkv" are two
+        genuinely distinct files on a case-sensitive filesystem, not a
+        same-file case difference. Probing real filesystem behavior
+        (rather than assuming by OS name) keeps this meaningful even on a
+        case-sensitive macOS configuration.
+        """
+        if not _filesystem_is_case_insensitive(tmp_path):
+            pytest.skip("this filesystem is case-sensitive -- see the sibling test below")
         old = str(tmp_path / "the.matrix.mkv")
         new = str(tmp_path / "The.Matrix.mkv")
         assert is_case_only_rename(old, new)
+
+    def test_false_for_pure_case_difference_on_a_case_sensitive_filesystem(self, tmp_path):
+        """The other half of the platform split above: on a case-sensitive
+        filesystem (Linux, or macOS configured that way), a pure case
+        difference names two genuinely distinct files -- there's no
+        same-file aliasing risk for rename_case_only's double-hop dance to
+        protect against, so a normal rename is correct and
+        is_case_only_rename correctly says so.
+        """
+        if _filesystem_is_case_insensitive(tmp_path):
+            pytest.skip("this filesystem is case-insensitive -- see the sibling test above")
+        old = str(tmp_path / "the.matrix.mkv")
+        new = str(tmp_path / "The.Matrix.mkv")
+        assert not is_case_only_rename(old, new)
 
     def test_false_for_a_genuinely_different_name(self, tmp_path):
         old = str(tmp_path / "the.matrix.mkv")
