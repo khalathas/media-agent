@@ -329,7 +329,7 @@ Music\
 Two things to know:
 
 - **Files with missing tags are not guessed at.** They're moved to a folder called `_NeedsTagging` so you can fix them yourself with a tag editor like [MusicBrainz Picard](https://picard.musicbrainz.org/). Nothing is lost.
-- **This command deletes junk files** — `Thumbs.db`, `desktop.ini`, stray `.m3u` playlists, leftover album art. This is the only place media-agent deletes anything. Your music is never deleted.
+- **This command deletes junk files** — `Thumbs.db`, `desktop.ini`, stray `.m3u` playlists, and by default **any file literally named `folder.jpg`, `folder.jpeg`, `AlbumArt.jpg`, or `AlbumArt.jpeg`** (also anything else starting with `albumart`), regardless of what image it actually contains. That name convention is often auto-generated filler, but it's also the exact name many people save their own hand-picked, high-resolution cover art under — media-agent can't tell the two apart by filename alone. If you've deliberately curated art under one of those names, either rename it first or check `dry-run`'s preview report before running `--apply`. This is the only place media-agent deletes anything, and your actual music files are never deleted.
 
 Then:
 
