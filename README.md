@@ -56,7 +56,6 @@ winget install Gyan.FFmpeg
 ```
 
 ```bash
-brew install ffmpeg          # macOS
 sudo apt install ffmpeg      # Debian / Ubuntu
 ```
 
@@ -81,13 +80,12 @@ winget install Git.Git
 ```
 
 ```bash
-brew install git              # macOS
 sudo apt install git          # Debian / Ubuntu
 ```
 
 Then **close and reopen your terminal** and check again with `git --version`.
 
-> **Opening a terminal:** on Windows press <kbd>Start</kbd>, type `powershell`, press <kbd>Enter</kbd>. On macOS press <kbd>Cmd</kbd>+<kbd>Space</kbd>, type `terminal`, press <kbd>Enter</kbd>.
+> **Opening a terminal:** on Windows press <kbd>Start</kbd>, type `powershell`, press <kbd>Enter</kbd>. On Linux, use your distribution's terminal application.
 
 ---
 

@@ -39,7 +39,7 @@ Copy that path, then:
 4. Click **New**, paste the folder, click OK on all three windows
 5. **Close and reopen your terminal** — this is the step people miss
 
-**macOS / Linux:** add the folder `pip` named to your `~/.zshrc` or `~/.bashrc`:
+**Linux:** add the folder `pip` named to your `~/.bashrc`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -134,7 +134,6 @@ winget install Gyan.FFmpeg
 ```
 
 ```bash
-brew install ffmpeg          # macOS
 sudo apt install ffmpeg      # Debian / Ubuntu
 ```
 

@@ -22,7 +22,6 @@ The second option is genuinely worth it. You will understand what the tool does 
 A terminal is a window where you type commands instead of clicking.
 
 - **Windows:** press <kbd>Start</kbd>, type `powershell`, press <kbd>Enter</kbd>.
-- **macOS:** press <kbd>Cmd</kbd>+<kbd>Space</kbd>, type `terminal`, press <kbd>Enter</kbd>.
 - **Linux:** you already know.
 
 You'll see a window with a blinking cursor. Everything below gets typed here, one line at a time, pressing <kbd>Enter</kbd> after each.
@@ -65,9 +64,6 @@ winget install Git.Git
 ```
 
 ```bash
-# macOS
-brew install git
-
 # Debian / Ubuntu
 sudo apt install git
 ```
@@ -122,9 +118,6 @@ winget install Gyan.FFmpeg
 ```
 
 ```bash
-# macOS
-brew install ffmpeg
-
 # Debian / Ubuntu
 sudo apt install ffmpeg
 ```
