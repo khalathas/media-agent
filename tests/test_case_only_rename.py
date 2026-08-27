@@ -43,23 +43,30 @@ class TestIsCaseOnlyRename:
     def test_true_for_pure_case_difference_on_a_case_insensitive_filesystem(self, tmp_path):
         """is_case_only_rename's whole point is answering "does the OS
         consider these the same file" -- which is genuinely filesystem-
-        dependent (the function itself uses os.path.normcase, a no-op on
-        POSIX and case-folding on Windows). Found via a real CI run on
-        ubuntu-latest, not local testing: an earlier version of this test
-        asserted a fixed True regardless of platform, which happened to
-        pass on this project's only locally-tested platform (Windows) for
-        14 review rounds, then failed the very first time it ran on Linux
-        -- correctly, since "the.matrix.mkv" and "The.Matrix.mkv" are two
-        genuinely distinct files on a case-sensitive filesystem, not a
-        same-file case difference. Probing real filesystem behavior
-        (rather than assuming by OS name) keeps this meaningful even on a
+        dependent. Found via a real CI run on ubuntu-latest, not local
+        testing: an earlier version of this test asserted a fixed True
+        regardless of platform, which happened to pass on this project's
+        only locally-tested platform (Windows) for 14 review rounds, then
+        failed the very first time it ran on Linux -- correctly, since
+        "the.matrix.mkv" and "The.Matrix.mkv" are two genuinely distinct
+        files on a case-sensitive filesystem, not a same-file case
+        difference. Probing real filesystem behavior (rather than
+        assuming by OS name) keeps this meaningful even on a
         case-sensitive macOS configuration.
+
+        The source file is created for real, matching how the function is
+        actually called (always on an existing source) -- a follow-up
+        macOS CI run found that os.path.normcase alone can't detect this
+        case (it's a no-op on every POSIX system, not just case-sensitive
+        ones), and the os.path.samefile() fallback that fixes that needs
+        real files to compare.
         """
         if not _filesystem_is_case_insensitive(tmp_path):
             pytest.skip("this filesystem is case-sensitive -- see the sibling test below")
-        old = str(tmp_path / "the.matrix.mkv")
+        old_p = tmp_path / "the.matrix.mkv"
+        old_p.write_bytes(b"content")
         new = str(tmp_path / "The.Matrix.mkv")
-        assert is_case_only_rename(old, new)
+        assert is_case_only_rename(str(old_p), new)
 
     def test_false_for_pure_case_difference_on_a_case_sensitive_filesystem(self, tmp_path):
         """The other half of the platform split above: on a case-sensitive
@@ -71,9 +78,10 @@ class TestIsCaseOnlyRename:
         """
         if _filesystem_is_case_insensitive(tmp_path):
             pytest.skip("this filesystem is case-insensitive -- see the sibling test above")
-        old = str(tmp_path / "the.matrix.mkv")
+        old_p = tmp_path / "the.matrix.mkv"
+        old_p.write_bytes(b"content")
         new = str(tmp_path / "The.Matrix.mkv")
-        assert not is_case_only_rename(old, new)
+        assert not is_case_only_rename(str(old_p), new)
 
     def test_false_for_a_genuinely_different_name(self, tmp_path):
         old = str(tmp_path / "the.matrix.mkv")

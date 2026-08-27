@@ -110,19 +110,38 @@ def group_by_basename(disk_files):
 
 
 def is_case_only_rename(old_path, new_path):
-    """True if new_path names the same file as old_path, differing only in
-    letter case (or path-separator style) -- not a different file that
-    already happens to occupy that name.
+    """True if new_path names the same file as old_path on THIS filesystem,
+    differing only in letter case (or path-separator style) -- not a
+    different file that already happens to occupy that name.
 
     os.path.exists(new_path) is True for both on a case-insensitive
     filesystem (Windows, and macOS by default), which otherwise makes a
     pure case correction ("the.matrix.mkv" -> "The.Matrix.mkv") look like a
     real conflict and get skipped and reported as "target already exists"
     -- nothing was wrong, and nothing happened.
+
+    os.path.normcase alone isn't sufficient to detect this: it's purely
+    OS-name-based (a no-op on every POSIX system, case-folding only on
+    Windows), NOT filesystem-behavior-based -- so it's a no-op on macOS
+    too, even though macOS's default filesystem (APFS) is case-insensitive.
+    Confirmed directly on a real GitHub Actions macos-latest runner: a
+    normcase-only check reported the exact false conflict this function
+    exists to prevent, on the one other platform its own docstring already
+    claimed to cover. A real os.path.samefile() check (device+inode
+    comparison) is added as a fallback specifically for that gap -- it
+    asks the actual filesystem rather than assuming behavior from the OS
+    name, so it's correct on a case-sensitive macOS configuration too.
     """
-    return (old_path != new_path
-            and os.path.normcase(os.path.normpath(old_path))
-                == os.path.normcase(os.path.normpath(new_path)))
+    if old_path == new_path:
+        return False
+    if (os.path.normcase(os.path.normpath(old_path))
+            == os.path.normcase(os.path.normpath(new_path))):
+        return True
+    try:
+        return (os.path.exists(old_path) and os.path.exists(new_path)
+                and os.path.samefile(old_path, new_path))
+    except OSError:
+        return False
 
 
 def rename_case_only(old_path, new_path):
