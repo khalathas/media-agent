@@ -286,7 +286,7 @@ def test_probe_bash_rejects_a_shell_whose_resolved_tar_is_incompatible(tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# bash script (Linux/macOS fallback path)
+# bash script (Linux fallback path)
 # ---------------------------------------------------------------------------
 
 

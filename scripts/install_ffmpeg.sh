@@ -2,9 +2,11 @@
 # Installs ffmpeg/ffprobe for media-agent.
 #
 # PREFER YOUR PACKAGE MANAGER INSTEAD:
-#   macOS         brew install ffmpeg
 #   Debian/Ubuntu sudo apt install ffmpeg
 #   Fedora        sudo dnf install ffmpeg
+#
+# Linux only -- media-agent doesn't test or support macOS, and this
+# script's own fallback below is a Linux-only static-build download.
 #
 # This script is a fallback for systems without one. Its Linux fallback path
 # downloads a static build from johnvansickle.com. Unlike the previous
@@ -52,7 +54,7 @@ compute_md5() {
     if command -v md5sum >/dev/null 2>&1; then
         md5sum "$file" | awk '{print $1}'
     elif command -v md5 >/dev/null 2>&1; then
-        # BSD/macOS md5
+        # BSD-style md5 (different flag/output format than GNU's md5sum)
         md5 -q "$file"
     else
         return 1
@@ -242,18 +244,15 @@ main() {
     local os
     os="$(uname -s)"
 
-    # 3. Try system package manager
-    if [ "$os" = "Darwin" ]; then
-        if command -v brew >/dev/null 2>&1; then
-            echo "macOS detected — installing via Homebrew ..."
-            brew install ffmpeg
-            echo "Installed. media-agent will detect ffprobe on PATH automatically."
-            return 0
-        else
-            echo "Homebrew not found. Install Homebrew first: https://brew.sh"
-            echo "Then re-run this script."
-            return 1
-        fi
+    # 3. This script only supports Linux -- media-agent doesn't test or
+    # support macOS, and this fallback's static-build path (below) is a
+    # Linux-only download; falling through to it unguarded on another OS
+    # would silently try to run a Linux binary that can't execute there.
+    if [ "$os" != "Linux" ]; then
+        echo "This script only supports Linux. Detected: $os"
+        echo "Install ffmpeg with whatever tooling is normal on your platform,"
+        echo "then set ffprobe_path in your config if it isn't found automatically."
+        return 1
     fi
 
     # Linux — try package managers in order
