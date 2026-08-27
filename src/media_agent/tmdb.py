@@ -350,6 +350,21 @@ def cmd_tmdb_canonicalize(args):
         print("Nothing to do.")
         return
 
+    # Resolve each proposal to the actual file on disk *before* writing the
+    # report, not just at apply time -- movies_tmdb.json identifies films by
+    # bare filename, so two files sharing a name in different folders are
+    # indistinguishable in a report that only prints "FROM: Movie.mkv". Doing
+    # this once here means the preview shows exactly what apply will do (or
+    # exactly why it will skip an entry), instead of the reader having no way
+    # to tell which file, or whether the rename is even resolvable, until
+    # after they've already committed with --apply.
+    disk_files = scan_video_files(get_config().sections['movies'])
+    by_name    = group_by_basename(disk_files)
+    for p in proposals:
+        resolved_path, key_or_reason = _resolve_single_path(disk_files, by_name, p['old'])
+        p['resolved_key'] = key_or_reason if resolved_path is not None else None
+        p['resolve_error'] = None if resolved_path is not None else key_or_reason
+
     # ── Write report file ─────────────────────────────────────────────────────
     report_path = str(get_config().reports_dir / 'tmdb_canonicalize_preview.txt')
     with open(report_path, 'w', encoding='utf-8') as rf:
@@ -357,7 +372,10 @@ def cmd_tmdb_canonicalize(args):
         rf.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         rf.write("=" * 70 + "\n\n")
         for p in proposals:
-            rf.write(f"FROM: {p['old']}\n")
+            if p['resolve_error']:
+                rf.write(f"FROM: {p['old']}  [WARNING: {p['resolve_error']} — will be skipped at apply]\n")
+            else:
+                rf.write(f"FROM: {p['resolved_key']}\n")
             rf.write(f"  TO: {p['new']}\n\n")
         if collision_items:
             rf.write("\n" + "=" * 70 + "\n")
@@ -378,8 +396,6 @@ def cmd_tmdb_canonicalize(args):
         print("Aborted.")
         return
 
-    disk_files    = scan_video_files(get_config().sections['movies'])
-    by_name       = group_by_basename(disk_files)
     data          = load_movies_json()
     index_by_path = {m.get('path'): m for m in data['movies'] if m.get('path')}
     index_by_name = {m['name']: m for m in data['movies']}
@@ -472,6 +488,17 @@ def cmd_tmdb_rename(args):
               "or no confident matches found).")
         return
 
+    # Resolve each proposal to the actual file on disk *before* writing the
+    # report, not just at apply time -- see cmd_tmdb_canonicalize's identical
+    # comment above for why a bare filename in the preview is ambiguous when
+    # two files share a name in different folders.
+    disk_files = scan_video_files(get_config().sections['movies'])
+    by_name    = group_by_basename(disk_files)
+    for p in proposals:
+        resolved_path, key_or_reason = _resolve_single_path(disk_files, by_name, p['old'])
+        p['resolved_key'] = key_or_reason if resolved_path is not None else None
+        p['resolve_error'] = None if resolved_path is not None else key_or_reason
+
     # ── Write report file ─────────────────────────────────────────────────────
     label       = "confident+ambiguous" if args.include_ambiguous else "confident"
     report_path = str(get_config().reports_dir / 'tmdb_rename_preview.txt')
@@ -480,7 +507,10 @@ def cmd_tmdb_rename(args):
         rf.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         rf.write("=" * 70 + "\n\n")
         for p in proposals:
-            rf.write(f"FROM: {p['old']}\n")
+            if p['resolve_error']:
+                rf.write(f"FROM: {p['old']}  [WARNING: {p['resolve_error']} — will be skipped at apply]\n")
+            else:
+                rf.write(f"FROM: {p['resolved_key']}\n")
             rf.write(f"  TO: {p['new']}\n")
             rf.write(f"      TMDB: {p['tmdb_title']} ({p['tmdb_year']}) [tmdb-{p['tmdb_id']}]\n\n")
 
@@ -497,8 +527,6 @@ def cmd_tmdb_rename(args):
         print("Aborted.")
         return
 
-    disk_files    = scan_video_files(get_config().sections['movies'])
-    by_name       = group_by_basename(disk_files)
     data          = load_movies_json()
     index_by_path = {m.get('path'): m for m in data['movies'] if m.get('path')}
     index_by_name = {m['name']: m for m in data['movies']}
