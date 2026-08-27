@@ -163,6 +163,134 @@ fi
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_rejects_symlink_member(tmp_path):
+    """A symlink's target isn't validated by the path-traversal check --
+    only its own entry name is safe-looking. A later member extracted
+    "through" the symlink could still escape the destination, so symlink
+    members are refused outright rather than have their targets validated.
+    """
+    archive = tmp_path / "evil_symlink.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo(name="innocuous_name")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tf.addfile(info)
+
+    result = _run_bash(f'''
+if check_archive_paths "{archive.as_posix()}"; then
+    echo ACCEPTED_SYMLINK
+else
+    echo REJECTED_SYMLINK
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_SYMLINK" in result.stdout
+    assert "ACCEPTED_SYMLINK" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_rejects_hardlink_member(tmp_path):
+    archive = tmp_path / "evil_hardlink.tar"
+    with tarfile.open(archive, "w") as tf:
+        data = b"hello"
+        info = tarfile.TarInfo(name="regular.txt")
+        info.size = len(data)
+        import io
+        tf.addfile(info, io.BytesIO(data))
+        hard = tarfile.TarInfo(name="hardlink_name")
+        hard.type = tarfile.LNKTYPE
+        hard.linkname = "regular.txt"
+        tf.addfile(hard)
+
+    result = _run_bash(f'''
+if check_archive_paths "{archive.as_posix()}"; then
+    echo ACCEPTED_HARDLINK
+else
+    echo REJECTED_HARDLINK
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_HARDLINK" in result.stdout
+    assert "ACCEPTED_HARDLINK" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_rejects_too_many_members(tmp_path):
+    """A decompression-bomb-style guard: an archive with an implausible
+    number of members is refused rather than extracted unconditionally.
+    The real default (5000) is far above anything a real ffmpeg build
+    needs, so this exercises the override rather than waiting for a
+    thousands-of-entries fixture.
+    """
+    archive = tmp_path / "many.tar"
+    import io
+    with tarfile.open(archive, "w") as tf:
+        for i in range(10):
+            data = f"f{i}".encode()
+            info = tarfile.TarInfo(name=f"file{i}.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+    result = _run_bash(f'''
+export MEDIA_AGENT_MAX_ARCHIVE_MEMBERS=5
+if check_archive_paths "{archive.as_posix()}"; then
+    echo ACCEPTED_TOO_MANY
+else
+    echo REJECTED_TOO_MANY
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_TOO_MANY" in result.stdout
+    assert "ACCEPTED_TOO_MANY" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_accepts_reasonable_member_count(tmp_path):
+    """The count guard must not reject an ordinary, real-shaped archive --
+    only one that actually violates the (overridden, for this test) limit."""
+    archive = tmp_path / "few.tar"
+    import io
+    with tarfile.open(archive, "w") as tf:
+        for i in range(3):
+            data = f"f{i}".encode()
+            info = tarfile.TarInfo(name=f"file{i}.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+    result = _run_bash(f'''
+export MEDIA_AGENT_MAX_ARCHIVE_MEMBERS=5
+check_archive_paths "{archive.as_posix()}" && echo ACCEPTED_OK
+''')
+    assert result.returncode == 0, result.stderr
+    assert "ACCEPTED_OK" in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_rejects_declared_size_over_limit(tmp_path):
+    """A decompression-bomb-style guard on total declared uncompressed size,
+    summed across every member's size field in the verbose listing."""
+    archive = tmp_path / "sized.tar"
+    with tarfile.open(archive, "w") as tf:
+        data = b"hello world"  # 11 bytes
+        info = tarfile.TarInfo(name="file.txt")
+        info.size = len(data)
+        import io
+        tf.addfile(info, io.BytesIO(data))
+
+    result = _run_bash(f'''
+export MEDIA_AGENT_MAX_ARCHIVE_BYTES=5
+if check_archive_paths "{archive.as_posix()}"; then
+    echo ACCEPTED_OVERSIZE
+else
+    echo REJECTED_OVERSIZE
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_OVERSIZE" in result.stdout
+    assert "ACCEPTED_OVERSIZE" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
 def test_sh_pinned_version_and_checksums_present():
     """The installer must not fall back to a mutable 'latest' URL alias --
     guard against a future edit silently reintroducing it."""
@@ -259,6 +387,79 @@ Expand-ZipSafely -Path "{good_zip}" -Destination "{dest}"
     assert result.returncode == 0, result.stderr
     assert "SAFE_RESULT=True" in result.stdout
     assert (dest / "topdir" / "file.txt").exists()
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="powershell/pwsh not available")
+def test_ps1_rejects_unix_symlink_entry(tmp_path):
+    """.NET's ZipFile doesn't create real filesystem symlinks on extraction
+    -- ExtractToFile just writes the entry's raw bytes as an ordinary file
+    -- so this isn't a live traversal vector the way it is for tar. Rejected
+    anyway: a Unix-mode symlink entry (as Info-Zip's `zip -y` would write)
+    shouldn't silently land as a file full of an unrelated path string with
+    no indication anything unusual happened.
+    """
+    import stat
+
+    zip_path = tmp_path / "symlink.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        info = zipfile.ZipInfo("innocuous_name")
+        mode = stat.S_IFLNK | 0o777
+        info.external_attr = (mode << 16)
+        zf.writestr(info, "/etc/passwd")
+
+    result = _run_powershell(f'''
+$safe = Test-SafeZipEntries -Path "{zip_path}"
+Write-Host "SAFE_RESULT=$safe"
+''')
+    assert result.returncode == 0, result.stderr
+    assert "SAFE_RESULT=False" in result.stdout
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="powershell/pwsh not available")
+def test_ps1_rejects_too_many_entries(tmp_path):
+    zip_path = tmp_path / "many.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for i in range(10):
+            zf.writestr(f"file{i}.txt", f"f{i}")
+
+    result = _run_powershell(f'''
+$env:MEDIA_AGENT_MAX_ARCHIVE_MEMBERS = "5"
+$safe = Test-SafeZipEntries -Path "{zip_path}"
+Write-Host "SAFE_RESULT=$safe"
+''')
+    assert result.returncode == 0, result.stderr
+    assert "SAFE_RESULT=False" in result.stdout
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="powershell/pwsh not available")
+def test_ps1_accepts_reasonable_entry_count(tmp_path):
+    zip_path = tmp_path / "few.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for i in range(3):
+            zf.writestr(f"file{i}.txt", f"f{i}")
+
+    result = _run_powershell(f'''
+$env:MEDIA_AGENT_MAX_ARCHIVE_MEMBERS = "5"
+$safe = Test-SafeZipEntries -Path "{zip_path}"
+Write-Host "SAFE_RESULT=$safe"
+''')
+    assert result.returncode == 0, result.stderr
+    assert "SAFE_RESULT=True" in result.stdout
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="powershell/pwsh not available")
+def test_ps1_rejects_declared_size_over_limit(tmp_path):
+    zip_path = tmp_path / "sized.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("file.txt", "hello world")  # 11 bytes uncompressed
+
+    result = _run_powershell(f'''
+$env:MEDIA_AGENT_MAX_ARCHIVE_BYTES = "5"
+$safe = Test-SafeZipEntries -Path "{zip_path}"
+Write-Host "SAFE_RESULT=$safe"
+''')
+    assert result.returncode == 0, result.stderr
+    assert "SAFE_RESULT=False" in result.stdout
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="powershell/pwsh not available")

@@ -54,19 +54,52 @@ function Test-Sha256Checksum {
     return ($actual.ToLowerInvariant() -eq $Expected.ToLowerInvariant())
 }
 
+# Overridable via environment variable for testing; the defaults are
+# generous for a real ffmpeg build (tens of MB, a few dozen files).
+if (-not $env:MEDIA_AGENT_MAX_ARCHIVE_MEMBERS) { $env:MEDIA_AGENT_MAX_ARCHIVE_MEMBERS = '5000' }
+if (-not $env:MEDIA_AGENT_MAX_ARCHIVE_BYTES)   { $env:MEDIA_AGENT_MAX_ARCHIVE_BYTES   = '2147483648' }  # 2 GiB
+
+# S_IFLNK (Unix symlink) in the high 16 bits of a zip entry's external
+# attributes, as written by Info-Zip/zip -y and similar Unix-aware tools.
+# .NET's ZipFile does not create real filesystem symlinks on extraction --
+# ExtractToFile just writes the entry's raw bytes (the link target string)
+# as an ordinary file -- so this isn't a live traversal vector the way it
+# is for tar. Rejected anyway for parity with the bash installer and so a
+# symlink entry doesn't silently land as a file full of an unrelated path
+# string with no indication anything unusual happened.
+$UNIX_S_IFLNK = 0xA000
+$UNIX_S_IFMT  = 0xF000
+
 function Test-SafeZipEntries {
     <#
-    Inspects every entry in the zip at $Path and rejects the archive if any
-    entry would extract outside the destination directory: absolute paths,
-    drive-letter paths, or any ".." path segment.
+    Inspects every entry in the zip at $Path and rejects the archive if:
+      - any entry would extract outside the destination directory:
+        absolute paths, drive-letter paths, or any ".." path segment
+      - any entry is a Unix symlink (per its external attributes)
+      - the archive has more than $env:MEDIA_AGENT_MAX_ARCHIVE_MEMBERS
+        entries, or more than $env:MEDIA_AGENT_MAX_ARCHIVE_BYTES of total
+        uncompressed size (a decompression-bomb guard)
     #>
     param(
         [Parameter(Mandatory)][string]$Path
     )
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $maxMembers = [int64]$env:MEDIA_AGENT_MAX_ARCHIVE_MEMBERS
+    $maxBytes   = [int64]$env:MEDIA_AGENT_MAX_ARCHIVE_BYTES
     $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
     try {
+        $memberCount = 0
+        $totalBytes  = [int64]0
         foreach ($entry in $zip.Entries) {
+            $memberCount++
+            $totalBytes += $entry.Length
+
+            $unixMode = ($entry.ExternalAttributes -shr 16) -band 0xFFFF
+            if (($unixMode -band $UNIX_S_IFMT) -eq $UNIX_S_IFLNK) {
+                Write-Warning "Unsafe zip entry (symlink): $($entry.FullName)"
+                return $false
+            }
+
             $name = $entry.FullName -replace '\\', '/'
             if ($name -match '^(/|[A-Za-z]:)') {
                 Write-Warning "Unsafe zip entry (absolute path): $name"
@@ -77,6 +110,14 @@ function Test-SafeZipEntries {
                 Write-Warning "Unsafe zip entry (path traversal): $name"
                 return $false
             }
+        }
+        if ($memberCount -gt $maxMembers) {
+            Write-Warning "Unsafe archive: $memberCount entries exceeds the limit of $maxMembers"
+            return $false
+        }
+        if ($totalBytes -gt $maxBytes) {
+            Write-Warning "Unsafe archive: declared uncompressed size ($totalBytes bytes) exceeds the limit of $maxBytes bytes"
+            return $false
         }
     }
     finally {

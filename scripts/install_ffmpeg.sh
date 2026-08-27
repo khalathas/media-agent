@@ -82,22 +82,62 @@ verify_checksum() {
     return 0
 }
 
-# Lists the members of tar archive $1 and rejects any that are absolute
-# paths or contain a ".." path segment, which could otherwise be used to
-# write outside the extraction directory. Returns non-zero if any unsafe
-# member is found, or if the archive can't be listed at all.
+# Overridable via environment variable for testing; the defaults are
+# generous for a real ffmpeg static build (tens of MB, a few dozen files).
+: "${MEDIA_AGENT_MAX_ARCHIVE_MEMBERS:=5000}"
+: "${MEDIA_AGENT_MAX_ARCHIVE_BYTES:=2147483648}"   # 2 GiB
+
+# Lists the members of tar archive $1 and rejects it if any of the following
+# hold, or if the archive can't be listed at all:
+#   - a member is an absolute path or contains a ".." path segment (path
+#     traversal -- could write outside the extraction directory)
+#   - a member is a symlink or hardlink. A symlink's target isn't validated
+#     by this check, and a later member extracted "through" it could still
+#     escape the destination even though its own name looks safe -- refusing
+#     link members outright is simpler and safer than trying to validate
+#     every possible target.
+#   - the archive has more than $MEDIA_AGENT_MAX_ARCHIVE_MEMBERS members, or
+#     more than $MEDIA_AGENT_MAX_ARCHIVE_BYTES of total declared
+#     uncompressed size (a decompression-bomb guard)
 check_archive_paths() {
     local archive="$1" member seg unsafe=0
-    local listing
+    local plain_listing verbose_listing
     # --force-local: a colon in $archive (e.g. a Windows-style "C:/..." path,
     # as can appear when this is exercised under Git Bash) would otherwise
     # be parsed by GNU tar as a "host:path" remote archive spec.
-    if ! listing="$(tar --force-local -tf "$archive" 2>/dev/null)"; then
+    if ! plain_listing="$(tar --force-local -tf "$archive" 2>/dev/null)"; then
         echo "ERROR: could not list archive contents: $archive" >&2
         return 1
     fi
-    while IFS= read -r member; do
+    # -tv adds a leading type/permission column (e.g. "-rw-r--r--" for a
+    # regular file, "l..." for a symlink, "h..." for a hardlink) that plain
+    # -t doesn't provide. Listed a second time rather than parsed out of one
+    # combined pass, since the verbose format's exact column widths aren't
+    # guaranteed portable enough to reliably split out just the name --
+    # pairing the two listings by line order avoids needing to.
+    if ! verbose_listing="$(tar --force-local -tvf "$archive" 2>/dev/null)"; then
+        echo "ERROR: could not list archive contents (verbose): $archive" >&2
+        return 1
+    fi
+
+    local member_count=0 total_size=0 vline type_char size
+    while IFS= read -r member <&3 && IFS= read -r vline <&4; do
         [ -z "$member" ] && continue
+        member_count=$((member_count + 1))
+
+        type_char="${vline:0:1}"
+        if [ "$type_char" != "-" ] && [ "$type_char" != "d" ]; then
+            echo "ERROR: archive member is a symlink, hardlink, or other special type ('$type_char'), refusing: $member" >&2
+            unsafe=1
+            continue
+        fi
+
+        size="$(awk '{print $3; exit}' <<<"$vline")"
+        case "$size" in
+            ''|*[!0-9]*) size=0 ;;   # unparseable -- don't let it poison the running total
+        esac
+        total_size=$((total_size + size))
+
         case "$member" in
             /*)
                 echo "ERROR: archive member has an absolute path: $member" >&2
@@ -116,9 +156,21 @@ check_archive_paths() {
                 unsafe=1
             fi
         done
-    done <<EOF
-$listing
-EOF
+    done 3<<EOF3 4<<EOF4
+$plain_listing
+EOF3
+$verbose_listing
+EOF4
+
+    if [ "$member_count" -gt "$MEDIA_AGENT_MAX_ARCHIVE_MEMBERS" ]; then
+        echo "ERROR: archive has $member_count members, exceeding the limit of $MEDIA_AGENT_MAX_ARCHIVE_MEMBERS" >&2
+        unsafe=1
+    fi
+    if [ "$total_size" -gt "$MEDIA_AGENT_MAX_ARCHIVE_BYTES" ]; then
+        echo "ERROR: archive's declared uncompressed size ($total_size bytes) exceeds the limit of $MEDIA_AGENT_MAX_ARCHIVE_BYTES bytes" >&2
+        unsafe=1
+    fi
+
     [ "$unsafe" -eq 0 ]
 }
 
