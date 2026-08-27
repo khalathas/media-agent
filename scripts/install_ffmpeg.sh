@@ -120,6 +120,26 @@ check_archive_paths() {
         return 1
     fi
 
+    # The plain and verbose listings are paired up by line order below, on
+    # the assumption that both invocations enumerate the same archive's
+    # members in the same order. That assumption is normally safe (it's the
+    # same tar binary listing the same file twice), but the read loop below
+    # stops as soon as *either* stream runs out -- if the two ever disagree
+    # on member count for any reason, any member past the shorter stream's
+    # end is silently never visited by either the type check or the
+    # path-traversal check at all. Verified directly: a plain listing with
+    # one more entry than its paired verbose listing lets that extra entry
+    # (independent of what it is -- includes ".." traversal) through
+    # completely unchecked. Reject outright on a mismatch rather than trust
+    # a partially-paired validation.
+    local plain_count verbose_count
+    plain_count=$(printf '%s\n' "$plain_listing" | grep -c '^')
+    verbose_count=$(printf '%s\n' "$verbose_listing" | grep -c '^')
+    if [ "$plain_count" -ne "$verbose_count" ]; then
+        echo "ERROR: archive listing mismatch -- plain listing has $plain_count member(s), verbose listing has $verbose_count; refusing to trust a partially-paired validation" >&2
+        return 1
+    fi
+
     local member_count=0 total_size=0 vline type_char size
     while IFS= read -r member <&3 && IFS= read -r vline <&4; do
         [ -z "$member" ] && continue
@@ -145,6 +165,25 @@ check_archive_paths() {
                 continue
                 ;;
         esac
+        # Bash arithmetic is signed 64-bit and wraps silently past ~9.2e18
+        # rather than erroring -- a declared size at or beyond that range
+        # would sum to a negative total and slip under any limit
+        # completely undetected. Verified directly: a fake size of
+        # 2^63 wraps total_size negative, which then passes even a tiny
+        # limit. Comparing an out-of-range value directly (`[ "$size" -gt
+        # ... ]`) isn't a safe guard either -- bash reports "integer
+        # expression expected" for it, and that error is swallowed as a
+        # false condition inside `if`, the wrong direction for a safety
+        # check. Reject on digit-string LENGTH instead, before any
+        # arithmetic touches the value at all: 15 digits (under a
+        # petabyte) is far beyond any real archive's legitimate size and
+        # comfortably clear of where summing many such values could itself
+        # approach overflow.
+        if [ "${#size}" -gt 15 ]; then
+            echo "ERROR: archive member declares an implausibly large size ($size bytes), refusing: $member" >&2
+            unsafe=1
+            continue
+        fi
         total_size=$((total_size + size))
 
         case "$member" in

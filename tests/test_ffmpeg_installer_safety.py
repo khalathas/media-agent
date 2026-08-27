@@ -55,15 +55,44 @@ def _all_bash_candidates():
     return candidates
 
 
+# check_archive_paths (install_ffmpeg.sh) requires GNU tar's --force-local.
+# Windows ships a bsdtar at C:\Windows\System32\tar.exe that rejects that
+# flag outright ("Option --force-local is not supported"). A bash candidate
+# that runs `echo` fine can still inherit a PATH where `tar` resolves to
+# that bsdtar instead of a real GNU tar -- reproduced directly: a non-login
+# MSYS2 bash can resolve `tar` to the Windows one depending on PATH order,
+# passing a trivial echo probe while every archive-hardening test then fails
+# with "could not list archive contents" for a reason unrelated to the
+# scripts under test. The probe below creates a real, valid, empty tar
+# (two 512-byte zero blocks -- the standard end-of-archive marker,
+# recognized by any conformant tar) and lists it with --force-local: GNU
+# tar accepts the flag and succeeds, bsdtar rejects the flag before it even
+# looks at the file and fails immediately -- a clean, content-independent
+# way to tell them apart without depending on either implementation's exact
+# error wording.
+_TAR_PROBE_SCRIPT = (
+    't=$(mktemp) || exit 1\n'
+    'head -c 1024 /dev/zero > "$t"\n'
+    'if tar --force-local -tf "$t" >/dev/null 2>&1; then\n'
+    '    rm -f "$t"\n'
+    '    echo __BASH_USABLE__\n'
+    'else\n'
+    '    rm -f "$t"\n'
+    'fi\n'
+)
+
+
 def _probe_bash(candidate):
-    """Run a real, trivial, non-interactive command through `candidate` and
-    report whether it actually worked. Any failure -- non-zero exit,
-    unexpected output, or a hang (some broken WSL launcher configurations
-    block waiting for interactive setup) -- counts as unusable.
+    """Run a real, non-interactive script through `candidate` and report
+    whether it actually works -- both the shell itself and, specifically,
+    a GNU-tar-compatible `tar` resolved through its inherited PATH (see
+    _TAR_PROBE_SCRIPT above). Any failure -- non-zero exit, unexpected
+    output, or a hang (some broken WSL launcher configurations block
+    waiting for interactive setup) -- counts as unusable.
     """
     try:
         result = subprocess.run(
-            [candidate, "-c", "echo __BASH_USABLE__"],
+            [candidate, "-c", _TAR_PROBE_SCRIPT],
             capture_output=True, text=True, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -190,6 +219,49 @@ class TestFindUsableBash:
         }))
 
         assert _find_usable_bash() is None
+
+
+# ---------------------------------------------------------------------------
+# _probe_bash against a REAL shell (not mocked) -- the twelfth-pass reviewer's
+# toolchain-mismatch finding is specifically about real inherited PATH
+# behavior, which a mocked subprocess.run can't reproduce.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_probe_bash_accepts_the_real_selected_shell():
+    """BASH was already selected by _find_usable_bash() at import time, so
+    if this fails, every other test in this file is running (or skipping)
+    against a shell that shouldn't have passed in the first place."""
+    assert _probe_bash(BASH) is True
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_probe_bash_rejects_a_shell_whose_inherited_tar_is_incompatible(monkeypatch):
+    """Reproduction of the twelfth-pass reviewer's finding: a bash whose
+    inherited PATH resolves `tar` to Windows' bundled bsdtar
+    (C:\\Windows\\System32\\tar.exe, which rejects --force-local outright)
+    must fail the probe -- a bare `echo` through the same shell would
+    still succeed, which is exactly how the previous version of this probe
+    could select a shell that runs fine but can't actually list an archive
+    the way check_archive_paths needs.
+
+    Calls _probe_bash() itself, not a hand-copied script -- an earlier
+    version of this test constructed its own poisoned script inline and
+    ran it via a raw subprocess.run(), which meant it was only testing
+    that *a* script could reproduce the failure, not that _probe_bash()
+    itself would catch it; reverting _probe_bash() back to an echo-only
+    check didn't make that version fail. subprocess.run() with no explicit
+    env inherits the current process's environment at call time, so
+    prepending the bsdtar directory to this process's PATH before calling
+    _probe_bash() reproduces a real machine's PATH ordering without any
+    mocking of _probe_bash or subprocess.run themselves.
+    """
+    monkeypatch.setenv("PATH", "C:\\Windows\\System32" + os.pathsep + os.environ["PATH"])
+    assert _probe_bash(BASH) is False, (
+        "the probe must fail when the resolved tar can't do --force-local, "
+        "not just when the shell itself doesn't run"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +536,67 @@ fi
     assert result.returncode == 0, result.stderr
     assert "REJECTED_UNPARSEABLE" in result.stdout
     assert "ACCEPTED_UNPARSEABLE" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_fails_closed_on_arithmetic_overflow(tmp_path):
+    """The twelfth-pass reviewer's finding: a declared size of 2^63 (one
+    past bash's signed-64-bit arithmetic range) wraps total_size NEGATIVE
+    on addition, which then passes even a tiny configured limit -- fail-open
+    on exactly the case the size guard exists to catch, just via arithmetic
+    instead of a non-numeric field. Verified directly before writing this
+    test: `total=$((0 + 9223372036854775808))` really does evaluate to
+    -9223372036854775808 in bash. Faked the same way as the unparseable-size
+    case above, since no real archive can declare a size this large without
+    actually containing that many bytes.
+    """
+    result = _run_bash('''
+tar() {
+    case "$2" in
+        -tf)  echo "huge.bin" ;;
+        -tvf) echo "-rw-r--r-- 0/0 9223372036854775808 1969-12-31 19:00 huge.bin" ;;
+    esac
+}
+export MEDIA_AGENT_MAX_ARCHIVE_BYTES=1000
+if check_archive_paths "irrelevant.tar"; then
+    echo ACCEPTED_OVERFLOW
+else
+    echo REJECTED_OVERFLOW
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_OVERFLOW" in result.stdout
+    assert "ACCEPTED_OVERFLOW" not in result.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available")
+def test_sh_check_archive_paths_rejects_mismatched_listing_lengths(tmp_path):
+    """The twelfth-pass reviewer's finding: the paired-read loop stops as
+    soon as either the plain or verbose listing runs out, so if the two
+    listings ever disagree on member count, any member past the shorter
+    stream's end is silently never visited by any check at all -- including
+    the path-traversal check. Faked with a plain listing one entry longer
+    than its paired verbose listing (the extra entry is itself a traversal
+    attempt, to make unmistakable what slipping through would mean), since
+    both real listings come from the same tar binary listing the same file
+    twice and can't disagree in practice.
+    """
+    result = _run_bash('''
+tar() {
+    case "$2" in
+        -tf)  echo "safe.txt"; echo "../escape.txt" ;;
+        -tvf) echo "-rw-r--r-- 0/0 5 1969-12-31 19:00 safe.txt" ;;
+    esac
+}
+if check_archive_paths "irrelevant.tar"; then
+    echo ACCEPTED_MISMATCH
+else
+    echo REJECTED_MISMATCH
+fi
+''')
+    assert result.returncode == 0, result.stderr
+    assert "REJECTED_MISMATCH" in result.stdout
+    assert "ACCEPTED_MISMATCH" not in result.stdout
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")
