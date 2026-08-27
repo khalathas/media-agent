@@ -249,6 +249,109 @@ class TestSubtitleStaysWithAConflictedVideo:
         assert (show / "720p" / "S01E01.mkv").exists()
 
 
+def _walk_forcing_show_subdir_order(show_path, order):
+    """A drop-in replacement for os.walk that forces a specific traversal
+    order for `show_path`'s direct subdirectories, real os.walk everywhere
+    else. os.walk's directory order is filesystem/OS-dependent and not
+    something a test can otherwise control deterministically -- confirmed
+    directly (see the commit that added this) that Windows and Linux visit
+    two conflicting quality subfolders in different orders for the exact
+    same fixture, which changes observable behavior in _build_normalize_tv_plan.
+    """
+    real_walk = os.walk
+
+    def fake_walk(top, *a, **kw):
+        for dirpath, dirnames, filenames in real_walk(top, *a, **kw):
+            if os.path.normpath(dirpath) == os.path.normpath(str(show_path)):
+                dirnames.sort(key=lambda d: order.index(d) if d in order else 99)
+            yield dirpath, dirnames, filenames
+
+    return fake_walk
+
+
+class TestSubtitleConflictMessageDoesNotDependOnWalkOrder:
+    """Found via a real CI run on ubuntu-latest, not local testing: this
+    project's test suite ran exclusively on Windows for 14 review rounds,
+    and TestSubtitleStaysWithAConflictedVideo above happened to pass on
+    every one of them -- Windows' os.walk order for this exact fixture
+    always visits the subtitled video (1080p) before the non-subtitled one
+    (720p). The very first time this ran on a real Linux runner, it visited
+    them in the opposite order and the subtitle's conflict message vanished
+    entirely: a losing video's own claim attempt fails and returns early
+    without ever examining its subtitle, so nothing about that subtitle
+    ever enters the conflict-reporting system when it happens to lose
+    first, versus being explicitly reported when it wins its claim and is
+    only retracted later. The underlying safety property (nothing moves)
+    held in both orderings; only the diagnostic message was order-dependent.
+
+    These tests force both orderings directly via monkeypatched os.walk,
+    so this doesn't require a Linux runner to verify (and won't get
+    re-broken and only be re-caught by accident on the next real CI run).
+    """
+
+    def test_subtitle_reported_when_its_video_wins_the_claim_first(
+            self, conflicted_episode_with_one_subtitle, monkeypatch):
+        show = conflicted_episode_with_one_subtitle["show"]
+        monkeypatch.setattr(
+            'media_agent.tv.os.walk',
+            _walk_forcing_show_subdir_order(show, ["1080p", "720p"]))
+        data = json.loads(
+            (conflicted_episode_with_one_subtitle["root"] / "tvshows.json")
+            .read_text(encoding='utf-8'))
+        plan = _build_normalize_tv_plan(
+            str(conflicted_episode_with_one_subtitle["root"] / "TV Shows"), data)
+
+        assert plan['file_moves'] == []
+        conflict_text = " ".join(reason for reason, _path in plan['conflicts'])
+        assert "S01E01.srt" in conflict_text
+
+    def test_subtitle_reported_when_its_video_loses_the_claim_first(
+            self, conflicted_episode_with_one_subtitle, monkeypatch):
+        """The exact ordering that silently dropped the subtitle before
+        this fix -- the video WITHOUT a subtitle (720p) is visited first
+        and wins the claim, so the video WITH the subtitle (1080p) is the
+        one that loses. Its subtitle must still be reported.
+        """
+        show = conflicted_episode_with_one_subtitle["show"]
+        monkeypatch.setattr(
+            'media_agent.tv.os.walk',
+            _walk_forcing_show_subdir_order(show, ["720p", "1080p"]))
+        data = json.loads(
+            (conflicted_episode_with_one_subtitle["root"] / "tvshows.json")
+            .read_text(encoding='utf-8'))
+        plan = _build_normalize_tv_plan(
+            str(conflicted_episode_with_one_subtitle["root"] / "TV Shows"), data)
+
+        assert plan['file_moves'] == [], (
+            f"expected no moves at all (both videos conflict), got {plan['file_moves']}"
+        )
+        conflict_text = " ".join(reason for reason, _path in plan['conflicts'])
+        assert "S01E01.srt" in conflict_text, (
+            "the subtitle belonging to the LOSING video in this walk order "
+            f"was never reported at all -- got conflicts:\n{plan['conflicts']}"
+        )
+
+    def test_apply_leaves_the_subtitle_with_its_video_regardless_of_walk_order(
+            self, conflicted_episode_with_one_subtitle, monkeypatch):
+        """The behavioral guarantee (not just the message) must also hold
+        in the losing-video-visited-first order -- belt and suspenders
+        alongside the plan-level assertions above."""
+        show = conflicted_episode_with_one_subtitle["show"]
+        monkeypatch.setattr(
+            'media_agent.tv.os.walk',
+            _walk_forcing_show_subdir_order(show, ["720p", "1080p"]))
+
+        cmd_normalize_tv(Args(apply=True))
+
+        assert not (show / "Season 01").exists(), "a conflict should create nothing"
+        assert (show / "1080p" / "S01E01.mkv").exists()
+        assert (show / "1080p" / "S01E01.srt").exists(), (
+            "the subtitle moved away from its video even though the video "
+            "itself correctly stayed put"
+        )
+        assert (show / "720p" / "S01E01.mkv").exists()
+
+
 class TestSubtitleSharedByTwoVideoVariants:
     """A subtitle claimed twice for two DIFFERENT videos of the same episode
     (S01E01.mkv and S01E01.mp4, both valid, no conflict between them) must

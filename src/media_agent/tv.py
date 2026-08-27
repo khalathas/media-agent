@@ -1002,13 +1002,40 @@ def _build_normalize_tv_plan(tv_root, data):
                 # language-tagged ones (episode.en.srt), via the same
                 # matcher find_external_subtitles uses for the index.
                 #
-                # Only if the video itself was actually claimed: if it just
-                # became a conflict, its subtitle must stay with it rather
-                # than moving off on its own. (A video claimed now can still
-                # be retracted later by a conflicting third file -- that path
-                # is handled inside _claim_destination via parent_video_key,
-                # which retracts this subtitle along with it when that happens.)
+                # If the video's own claim just failed (a conflict against
+                # an already-claimed destination), its subtitle must stay
+                # with it rather than moving off on its own -- but that
+                # silence must still be reported. os.walk's directory
+                # traversal order is filesystem/OS-dependent (confirmed:
+                # Windows and Linux visit the SAME two conflicting quality
+                # subfolders in different orders for the identical fixture),
+                # and whichever video os.walk happens to visit first "wins"
+                # the claim; without this, the loser's subtitle -- if any --
+                # was silently never examined at all on orderings where the
+                # loser happens to be the one with a subtitle, while the
+                # exact same topology visited in the other order correctly
+                # explained it via the retraction cascade below. Report it
+                # explicitly here so the outcome doesn't depend on
+                # unspecified walk order.
                 if not video_claimed:
+                    stem = os.path.splitext(fname)[0]
+                    for other_file in filenames:
+                        if not _subtitle_matches_video(other_file, stem):
+                            continue
+                        srt_src = os.path.join(show_path_effective,
+                                               rel_dir if rel_dir else '',
+                                               other_file).replace('\\', '/')
+                        if not rel_dir:
+                            srt_src = os.path.join(show_path_effective, other_file).replace('\\', '/')
+                        srt_dst = os.path.join(show_path_effective, target_dir, other_file).replace('\\', '/')
+                        if srt_src == srt_dst:
+                            continue
+                        conflicts.append(
+                            (f"'{other_file}' in {_where(srt_src, show_path_effective)} "
+                             f"stays with its video '{fname}', whose move was "
+                             "cancelled by a conflict above -- left in place so "
+                             "the episode's files move together or not at all",
+                             srt_dst))
                     continue
                 stem = os.path.splitext(fname)[0]
                 for other_file in filenames:
